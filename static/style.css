@@ -229,3 +229,17 @@ table.compact td, table.compact th, table.stats-table td { white-space: nowrap; 
   .scoreboard .score { font-size: 28px; }
   .scoreboard .mid .muted { font-size: 11.5px; }
 }
+
+/* Site logo (navy + orange on transparent): shown as-is in light mode, on a white chip in dark mode */
+.brand { display: inline-flex; align-items: center; gap: 10px; }
+.brand-mark { display: inline-flex; border-radius: 6px; }
+.brand-mark img { display: block; height: 32px; width: auto; }
+@media (prefers-color-scheme: dark) {
+  .brand-mark { background: #fff; padding: 3px 7px; }
+  .brand-mark img { height: 26px; }
+}
+@media (max-width: 480px) {
+  .brand-name { display: none; }
+}
+.brand .brand-name { color: var(--text); }
+.brand .brand-name span { color: #f47b20; } /* the logo's orange */
