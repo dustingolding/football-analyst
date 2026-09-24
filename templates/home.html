@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}Football, by the numbers{% endblock %}
+
+{% macro game_card(league, g) -%}
+  <a class="game-card" href="{{ url_for('game', league=league, game_id=g.game_id) }}">
+    <div class="gc-time muted">{{ g.start_time|kickoff }}{% if g.notes %} · {{ g.notes }}{% endif %}</div>
+    {% for side in ('away', 'home') %}
+      {% set prob = g.win_prob if side == 'home' else (1 - g.win_prob if g.win_prob is not none else none) %}
+      <div class="gc-team {{ 'fav' if prob is not none and prob > 0.5 }}">
+        {% if g[side ~ '_logo'] %}<img src="{{ g[side ~ '_logo'] }}" alt="" loading="lazy">{% endif %}
+        <span class="gc-name">{% if g[side ~ '_rank'] %}<em class="rank">{{ g[side ~ '_rank'] }}</em>{% endif %}{{ g[side ~ '_short'] or g[side ~ '_abbr'] }}</span>
+        <span class="gc-proj">{{ ((g.proj_home if side == 'home' else g.proj_away)|round|int) if g.proj_home is defined else '' }}</span>
+        <span class="gc-prob">{{ prob|pct }}</span>
+      </div>
+    {% endfor %}
+    <div class="gc-foot muted">{{ g.spread_text }}{% if g.total %} · O/U {{ g.total|num }}{% endif %}</div>
+  </a>
+{%- endmacro %}
+
+{% block content %}
+<section class="home-hero">
+  <div>
+    <h1>Football, by the numbers</h1>
+    <p class="muted">Win probabilities, projections and ratings for the NFL and college football, built from every game since 2005 and compared honestly with Vegas.</p>
+  </div>
+  <div class="hero-stats">
+    {% for lg, rec in records.items() if rec.picks[1] %}
+      <div>
+        <strong>{{ rec.picks[0] }}-{{ rec.picks[1] - rec.picks[0] }}</strong>
+        <span>{{ lg|upper }} winners picked in {{ rec.season }}</span>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="home-grid">
+  {% for lg, name in leagues.items() %}
+  <section>
+    <div class="section-head">
+      <h2>{{ 'This week in the NFL' if lg == 'nfl' else 'Top 25 matchups' }}</h2>
+      <a href="{{ url_for('slate', league=lg) }}">All {{ lg|upper }} games →</a>
+    </div>
+    <div class="card-grid">
+      {% for g in featured[lg] %}{{ game_card(lg, g) }}{% else %}<p class="muted">No games in the next week.</p>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+{% if edges %}
+<section>
+  <div class="section-head">
+    <h2>Where our model disagrees with Vegas</h2>
+    <a href="{{ url_for('models') }}">How the models do →</a>
+  </div>
+  <div class="edge-grid">
+    {% for lg, g in edges %}
+      <a class="panel edge" href="{{ url_for('game', league=lg, game_id=g.game_id) }}">
+        <span class="edge-head"><span class="muted small">{{ lg|upper }} · {{ g.start_time|kickoff }}</span>
+          <span class="edge-size">{{ g.edge|abs|num }} pts</span></span>
+        <strong>{{ g.away_short or g.away_abbr }} @ {{ g.home_short or g.home_abbr }}</strong>
+        <span>Vegas {{ g.spread_text }} · our model leans <b>{{ g.lean }}</b></span>
+      </a>
+    {% endfor %}
+  </div>
+  <p class="muted small">Leans come from models that never see betting lines. Over our test seasons they have hit about 50% against the spread (52.4% is break-even), so treat them as a talking point, not a tip.</p>
+</section>
+{% endif %}
+
+<div class="home-grid">
+  {% for lg, res in results.items() if res %}
+  <section>
+    <div class="section-head">
+      <h2>{{ lg|upper }} last week</h2>
+      <a href="{{ url_for('slate', league=lg, season=res.season, type=res.season_type, week=res.week) }}">Week {{ res.week }} results →</a>
+    </div>
+    <div class="panel">
+      <div class="result-line">
+        <div><strong>{{ res.picks[0] }}-{{ res.picks[1] - res.picks[0] }}</strong><span class="muted small">winners picked</span></div>
+        <div><strong>{{ res.ats[0] }}-{{ res.ats[1] - res.ats[0] }}</strong><span class="muted small">leans vs the spread</span></div>
+      </div>
+      {% if res.upsets %}
+        <h3>Biggest upsets</h3>
+        <ul class="plain">
+          {% for g in res.upsets %}
+            {% set winner_home = g.winner_home %}
+            <li>
+              <a href="{{ url_for('game', league=lg, game_id=g.game_id) }}">
+                <strong>{{ g.home_short if winner_home else g.away_short }}</strong>
+                {{ g.home_score if winner_home else g.away_score }}-{{ g.away_score if winner_home else g.home_score }}
+                over {{ g.away_short if winner_home else g.home_short }}
+              </a>
+              <span class="muted small">· had a {{ (g.win_prob if winner_home else 1 - g.win_prob)|pct }} chance</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<div class="home-grid">
+  <section>
+    <div class="section-head"><h2>NFL power ratings</h2><a href="{{ url_for('ratings', league='nfl') }}">Full ratings →</a></div>
+    <div class="table-scroll"><table class="compact">
+      <tbody>
+      {% for t in power %}
+        <tr><td class="muted">{{ t.rank }}</td><td class="nowrap">{{ team_link('nfl', t.team_id, t.team) }}</td>
+          <td class="muted">{{ t.record }}</td><td><strong>{{ t.elo|num(0) }}</strong></td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  <section>
+    <div class="section-head"><h2>AP Top 10</h2><a href="{{ url_for('rankings_page', league='cfb') }}">All polls →</a></div>
+    <div class="table-scroll"><table class="compact">
+      <tbody>
+      {% for r in ap %}
+        <tr><td><strong>{{ r.rank }}</strong></td><td class="nowrap">{{ team_link('cfb', r.team_id, r.team) }}</td>
+          <td class="muted">{{ r.record or '' }}</td>
+          <td class="nowrap">{% if r.movement %}<span class="move {{ 'up' if r.movement > 0 else 'down' }}">{{ '▲' if r.movement > 0 else '▼' }}{{ r.movement|abs }}</span>{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+</div>
+{% endblock %}

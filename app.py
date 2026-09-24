@@ -128,10 +128,13 @@ def attach_predictions(league, games):
         g["spread_text"] = spread_text(g, spread)
         g["total"] = total
 
-        best = g["preds"].get("xgb_market") or g["preds"].get(independent) or g["preds"].get("elo")
-        g["win_prob"] = best["home_win_prob"] if best else None
-        margin = best["predicted_margin"] if best else None
-        proj_total = (best or {}).get("predicted_total") or total
+        # Best available number for each output: market-adjusted, then independent, then Elo
+        # (the market model has no win probability when a game has no moneyline).
+        order = [g["preds"].get(m) for m in ("xgb_market", independent, "elo") if g["preds"].get(m)]
+        pick = lambda key: next((p[key] for p in order if p.get(key) is not None), None)  # noqa: E731
+        g["win_prob"] = pick("home_win_prob")
+        margin = pick("predicted_margin")
+        proj_total = pick("predicted_total") or total
         if margin is not None and proj_total is not None:
             g["proj_home"] = (proj_total + margin) / 2
             g["proj_away"] = (proj_total - margin) / 2
@@ -170,9 +173,83 @@ def current_week(league):
     return r["season"], r["season_type"], r["week"]
 
 
+def upcoming_games(league, days=8):
+    games = query(GAME_SQL + " WHERE g.league = %s AND NOT g.completed AND g.start_time > now() - interval '6 hours' "
+                  "AND g.start_time < now() + %s * interval '1 day' AND g.status NOT IN ('STATUS_CANCELED', "
+                  "'STATUS_POSTPONED') ORDER BY g.start_time, g.game_id", (league, days))
+    return attach_predictions(league, games)
+
+
+def last_week_results(league):
+    """The most recent week with completed games: its games (with predictions) and our record."""
+    row = query("SELECT season, season_type, week FROM games WHERE league = %s AND completed "
+                "AND start_time < now() ORDER BY start_time DESC LIMIT 1", (league,))
+    if not row:
+        return None
+    r = row[0]
+    games = attach_predictions(league, query(
+        GAME_SQL + " WHERE g.league = %s AND g.season = %s AND g.season_type = %s AND g.week = %s AND g.completed",
+        (league, r["season"], r["season_type"], r["week"])))
+    picks = [g for g in games if g.get("pick_right") is not None]
+    leans = [g for g in games if g.get("lean_right") is not None]
+    upsets = sorted((g for g in games if g.get("win_prob") is not None and g.get("winner_home") is not None
+                     and (g["win_prob"] < 0.5) == g["winner_home"]),
+                    key=lambda g: min(g["win_prob"], 1 - g["win_prob"]))
+    return {**r, "picks": (sum(g["pick_right"] for g in picks), len(picks)),
+            "ats": (sum(g["lean_right"] for g in leans), len(leans)), "upsets": upsets[:3]}
+
+
+def season_record(league):
+    """Our picks this season (completed games): winners and the independent model against the spread."""
+    season = web_data.seasons(league)[0]
+    games = attach_predictions(league, query(GAME_SQL + " WHERE g.league = %s AND g.season = %s AND g.completed",
+                                             (league, season)))
+    picks = [g["pick_right"] for g in games if g.get("pick_right") is not None]
+    leans = [g["lean_right"] for g in games if g.get("lean_right") is not None]
+    return {"season": season, "picks": (sum(picks), len(picks)), "ats": (sum(leans), len(leans))}
+
+
 @app.route("/")
 def home():
-    return redirect(url_for("slate", league="nfl"))
+    featured = {}
+    edges = []
+    for league in LEAGUES:
+        games = upcoming_games(league)
+        if league == "cfb":
+            # Games with a ranked team, then the closest remaining FBS matchups by win probability.
+            ranked = [g for g in games if g["home_rank"] or g["away_rank"]]
+            featured[league] = ranked[:10]
+        else:
+            featured[league] = games[:10]
+        # Disagreements worth a look: real matchups (FBS vs FBS in college) with sane spreads;
+        # on 30-point lines a big gap is mostly noise. Top three per league.
+        season = web_data.seasons(league)[0]
+        candidates = [g for g in games if g.get("edge") is not None and abs(g["edge"]) >= 3
+                      and abs(g["line"].get("spread") or 99) <= 21
+                      and web_data.is_major(league, g["home_team_id"], season)
+                      and web_data.is_major(league, g["away_team_id"], season)]
+        candidates.sort(key=lambda g: -abs(g["edge"]))
+        edges += [(league, g) for g in candidates[:3]]
+
+    nfl_season = web_data.seasons("nfl")[0]
+    team_map = web_data.teams("nfl")
+    power = sorted((t for t in web_data.power_ratings("nfl", nfl_season).values() if t.get("rank")),
+                   key=lambda t: t["rank"])[:10]
+    for t in power:
+        t["team"] = team_map.get(t["team_id"])
+        t["record"] = (web_data.records("nfl", nfl_season).get(t["team_id"]) or {}).get("overall", "0-0")
+    cfb_season = web_data.seasons("cfb")[0]
+    weeks = web_data.poll_weeks("cfb", cfb_season)
+    ap = []
+    if weeks:
+        tables = web_data.poll_tables("cfb", cfb_season, weeks[0]["season_type"], weeks[0]["week"])
+        ap = next((t["rows"][:10] for t in tables if t["title"] == "AP Top 25"), [])
+
+    return render_template(
+        "home.html", featured=featured, edges=edges, power=power, ap=ap,
+        results={lg: last_week_results(lg) for lg in LEAGUES}, records={lg: season_record(lg) for lg in LEAGUES},
+        independent=INDEPENDENT_MODEL,
+    )
 
 
 @app.route("/healthz")

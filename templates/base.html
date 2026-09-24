@@ -22,7 +22,7 @@
       <div class="wrap">
         {% set items = [('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
              + ([('rankings_page', 'Rankings')] if league == 'cfb' else [])
-             + [('stats_page', 'Stats'), ('ratings', 'Power ratings')] %}
+             + [('stats_page', 'Stats'), ('ratings', 'Ratings')] %}
         {% for endpoint, label in items %}
           <a href="{{ url_for(endpoint, league=league) }}"
              class="{{ 'active' if request.endpoint == endpoint or (endpoint == 'stats_page' and request.endpoint == 'stats_leaders_page') or (endpoint == 'teams_page' and request.endpoint == 'team_page') or (endpoint == 'slate' and request.endpoint == 'game') }}">{{ label }}</a>
