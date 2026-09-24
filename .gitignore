@@ -220,6 +220,7 @@ __marimo__/
 # --- football-analyst ---
 # Secrets
 .env.*
+!.env.example
 
 # Data and model artifacts
 data/
