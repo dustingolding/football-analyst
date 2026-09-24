@@ -135,6 +135,49 @@ CREATE TABLE IF NOT EXISTS team_seasons (
     PRIMARY KEY (league, season, team_id, source)
 );
 
+-- Conference / division membership per season (CFB realigns, so it's per season).
+CREATE TABLE IF NOT EXISTS team_affiliations (
+    league          TEXT    NOT NULL,
+    season          INTEGER NOT NULL,
+    team_id         TEXT    NOT NULL,   -- ESPN team_id
+    conference      TEXT,
+    division        TEXT,
+    classification  TEXT,               -- CFB: fbs, fcs, ii, iii
+    PRIMARY KEY (league, season, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS rosters (
+    league      TEXT    NOT NULL,
+    season      INTEGER NOT NULL,
+    team_id     TEXT    NOT NULL,       -- ESPN team_id
+    player_id   TEXT    NOT NULL,       -- NFL: gsis id; CFB: ESPN athlete id (same ids as box scores)
+    source      TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    position    TEXT,
+    jersey      INTEGER,
+    height      INTEGER,                -- inches
+    weight      INTEGER,
+    experience  TEXT,                   -- NFL: years in the league; CFB: class year
+    origin      TEXT,                   -- NFL: college; CFB: hometown
+    headshot    TEXT,
+    PRIMARY KEY (league, season, team_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS polls (
+    league              TEXT    NOT NULL,
+    season              INTEGER NOT NULL,
+    season_type         INTEGER NOT NULL,   -- 2 = regular, 3 = postseason
+    week                INTEGER NOT NULL,
+    poll                TEXT    NOT NULL,   -- AP Top 25, Coaches Poll, Playoff Committee Rankings
+    team_id             TEXT    NOT NULL,
+    rank                INTEGER NOT NULL,
+    points              INTEGER,
+    first_place_votes   INTEGER,
+    PRIMARY KEY (league, season, season_type, week, poll, team_id)
+);
+
+CREATE INDEX IF NOT EXISTS player_game_stats_team_idx ON player_game_stats (league, team_id, source);
+
 -- One row per game of pre-game features (features.py); targets are NULL until the game is played.
 CREATE TABLE IF NOT EXISTS game_features (
     league        TEXT        NOT NULL,

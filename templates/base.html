@@ -12,12 +12,24 @@
       <a class="brand" href="{{ url_for('home') }}">Sideline<span>Wire</span> <small>dev</small></a>
       <nav>
         {% for key, name in leagues.items() %}
-          <a href="{{ url_for('slate', league=key) }}" class="{{ 'active' if league == key and request.endpoint == 'slate' }}">{{ key|upper }}</a>
-          <a href="{{ url_for('ratings', league=key) }}" class="{{ 'active' if league == key and request.endpoint == 'ratings' }}">{{ key|upper }} Ratings</a>
+          <a href="{{ url_for('slate', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
         {% endfor %}
         <a href="{{ url_for('models') }}" class="{{ 'active' if request.endpoint == 'models' }}">Models</a>
       </nav>
     </div>
+    {% if league %}
+    <div class="subnav">
+      <div class="wrap">
+        {% set items = [('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
+             + ([('rankings_page', 'Rankings')] if league == 'cfb' else [])
+             + [('stats_page', 'Stats'), ('ratings', 'Power ratings')] %}
+        {% for endpoint, label in items %}
+          <a href="{{ url_for(endpoint, league=league) }}"
+             class="{{ 'active' if request.endpoint == endpoint or (endpoint == 'stats_page' and request.endpoint == 'stats_leaders_page') or (endpoint == 'teams_page' and request.endpoint == 'team_page') or (endpoint == 'slate' and request.endpoint == 'game') }}">{{ label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
   </header>
   <main class="wrap">
     {% block content %}{% endblock %}

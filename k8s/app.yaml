@@ -15,9 +15,10 @@ spec:
       labels:
         app: web
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: web
-          image: football-analyst-web:20260924-193327
+          image: football-analyst-web:20260924-214045
           imagePullPolicy: Never  # imported into k3s by deploy.sh; there is no registry
           ports:
             - name: http
@@ -28,6 +29,11 @@ spec:
                 secretKeyRef:
                   name: web-db
                   key: DATABASE_URL
+          lifecycle:
+            preStop:
+              # Keep serving while Traefik drops this pod from rotation, so deploys don't 502.
+              exec:
+                command: ["sleep", "15"]
           readinessProbe:
             httpGet:
               path: /healthz

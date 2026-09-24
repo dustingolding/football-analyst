@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ league_name }} ratings{% endblock %}
+{% from "_macros.html" import team_link %}
+{% block title %}{{ league_name }} power ratings{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>{{ league_name }} ratings</h1>
-    <p class="muted">{{ season }} · each team going into its next game</p>
+    <h1>{{ league_name }} power ratings</h1>
+    <p class="muted">{{ season }} · each team going into its next game{% if league == 'cfb' %} · FBS{% endif %}</p>
   </div>
 </div>
 <div class="table-scroll">
@@ -21,8 +22,8 @@
   <tbody>
   {% for t in teams %}
     <tr>
-      <td class="muted">{{ loop.index }}</td>
-      <td class="nowrap">{% if t.logo %}<img class="logo" src="{{ t.logo }}" alt="" loading="lazy">{% endif %}{{ t.name }}</td>
+      <td class="muted">{{ t.rank }}</td>
+      <td class="nowrap">{{ team_link(league, t.team_id, t.team) }}</td>
       <td>{{ t.record }}</td>
       <td><strong>{{ t.elo|num(0) }}</strong></td>
       <td>{{ t.off|signed(3) }}</td>

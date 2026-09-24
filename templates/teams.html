@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}{{ league_name }} teams{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }} teams</h1>
+    <p class="muted">{{ season }} · {{ 'by division' if league == 'nfl' else 'FBS, by conference' }}</p>
+  </div>
+</div>
+<div class="team-groups">
+  {% for group in groups %}
+  <section class="panel">
+    <h3>{{ group.name }}</h3>
+    <ul class="team-list">
+      {% for t in group.teams %}
+        <li>
+          {{ team_link(league, t.team_id, t.team, t.ap_rank) }}
+          <span class="muted small">{{ t.overall }}{% if t.elo_rank %} · Elo #{{ t.elo_rank }}{% endif %}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link, season_picker, stat %}
+{% block title %}{{ team.display_name }} {{ season }}{% endblock %}
+{% block content %}
+<section class="team-hero" style="--team: {{ '#' ~ team.color if team.color else 'var(--accent)' }}">
+  {% if team.logo %}<img src="{{ team.logo }}" alt="">{% endif %}
+  <div>
+    <h1>{% if ap_rank %}<em class="rank">{{ ap_rank }}</em> {% endif %}{{ team.display_name }}</h1>
+    <p class="muted">
+      {{ season }}
+      {% if league == 'nfl' and aff.division %} · {{ aff.division }}{% elif aff.conference %} · {{ aff.conference }}{% endif %}
+      {% if record %} · {{ record.overall }}{% if league == 'cfb' and record.cw + record.cl %} ({{ record.conf }} conf){% elif league == 'nfl' %} ({{ record.div }} div){% endif %}{% endif %}
+    </p>
+  </div>
+  <div class="hero-picker">{{ season_picker(seasons, season, {'tab': tab}) }}</div>
+</section>
+
+<div class="tabs">
+  {% for key, label in [('home', 'Home'), ('schedule', 'Schedule'), ('stats', 'Stats'), ('roster', 'Roster')] %}
+    <a class="{{ 'active' if tab == key }}" href="{{ url_for('team_page', league=league, team_id=team_id, season=season, tab=key) }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+{% if tab == 'home' %}
+  <div class="cards">
+    <div class="card"><span>Record</span><strong>{{ record.overall if record else '0-0' }}</strong>
+      {% if record %}<small class="muted">Streak {{ record.streak or '–' }}</small>{% endif %}</div>
+    <div class="card"><span>Points per game</span><strong>{{ season_stats.ppg|num if season_stats else '–' }}</strong>
+      <small class="muted">allowing {{ season_stats.papg|num if season_stats else '–' }}</small></div>
+    <div class="card"><span>Elo</span><strong>{{ power.elo|num(0) if power else '–' }}</strong>
+      {% if power and power.rank %}<small class="muted">#{{ power.rank }} in {{ 'the NFL' if league == 'nfl' else 'FBS' }}</small>{% endif %}</div>
+    <div class="card"><span>Offense / defense EPA</span>
+      <strong>{{ power.off|signed(3) if power else '–' }} / {{ power.def|signed(3) if power else '–' }}</strong>
+      <small class="muted">per play, opponent-adjusted</small></div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      {% if upcoming %}
+      <h2>Next game</h2>
+      <a class="panel next-game" href="{{ url_for('game', league=league, game_id=upcoming.game_id) }}">
+        <div><strong>{{ 'vs' if upcoming.is_home else '@' }} {% if upcoming.opp.rank %}<em class="rank">{{ upcoming.opp.rank }}</em>{% endif %}{{ upcoming.opp.name }}</strong></div>
+        <div class="muted small">{{ upcoming.start_time|kickoff }}</div>
+        <div>Line: {{ upcoming.spread_text }} · Total {{ upcoming.total|num }}</div>
+        <div>Win probability: <strong>{{ upcoming.team_win_prob|pct }}</strong>
+          {% if upcoming.proj_home is defined %} · Projected {{ (upcoming.proj_home if upcoming.is_home else upcoming.proj_away)|round|int }}-{{ (upcoming.proj_away if upcoming.is_home else upcoming.proj_home)|round|int }}{% endif %}</div>
+      </a>
+      {% endif %}
+
+      {% if recent %}
+      <h2>Recent results</h2>
+      <div class="table-scroll"><table>
+        <tbody>
+        {% for g in recent %}
+          <tr>
+            <td class="nowrap"><span class="result {{ g.result|lower }}">{{ g.result }}</span> {{ g.score }}</td>
+            <td>{{ 'vs' if g.is_home else '@' }} {{ team_link(league, g.opp.id, {'display_name': g.opp.name, 'logo': g.opp.logo}, g.opp.rank) }}</td>
+            <td class="small"><a href="{{ url_for('game', league=league, game_id=g.game_id) }}">Box</a></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+
+      {% if leaders %}
+      <h2>Team leaders</h2>
+      <div class="leaders">
+        {% for l in leaders %}
+          <div class="panel"><span class="muted small">{{ l.label|capitalize }}</span><strong>{{ l.value }}</strong><span>{{ l.name }} <small class="muted">{{ l.position or '' }}</small></span></div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div>
+      {% if group %}
+      <h2>{{ group.name }}</h2>
+      <div class="table-scroll"><table class="compact">
+        <thead><tr><th>Team</th><th>{{ 'Div' if league == 'nfl' else 'Conf' }}</th><th>Overall</th></tr></thead>
+        <tbody>
+        {% for t in group.teams %}
+          <tr class="{{ 'highlight' if t.team_id == team_id }}">
+            <td class="nowrap">{{ team_link(league, t.team_id, t.team, short=True) }}</td>
+            <td>{{ t.div if league == 'nfl' else t.conf }}</td><td>{{ t.overall }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+
+      {% if season_stats and season_stats.ypg is not none %}
+      <h2>Season stats</h2>
+      <div class="table-scroll"><table class="compact">
+        <thead><tr><th></th><th>Offense</th><th>Defense</th></tr></thead>
+        <tbody>
+          <tr><td>Points / game</td><td>{{ season_stats.ppg|num }}</td><td>{{ season_stats.papg|num }}</td></tr>
+          <tr><td>Yards / game</td><td>{{ season_stats.ypg|num }}</td><td>{{ season_stats.yapg|num }}</td></tr>
+          <tr><td>Passing / game</td><td>{{ season_stats.pass_ypg|num }}</td><td>{{ season_stats.pass_yapg|num }}</td></tr>
+          <tr><td>Rushing / game</td><td>{{ season_stats.rush_ypg|num }}</td><td>{{ season_stats.rush_yapg|num }}</td></tr>
+          <tr><td>EPA / play</td><td>{{ season_stats.off_epa|signed(3) }}</td><td>{{ season_stats.def_epa|signed(3) }}</td></tr>
+          <tr><td>Turnover margin</td><td colspan="2">{{ season_stats.to_margin|signed(0) }}</td></tr>
+          {% if season_stats.third_pct is not none %}<tr><td>Third down %</td><td colspan="2">{{ season_stats.third_pct|num }}</td></tr>{% endif %}
+        </tbody>
+      </table></div>
+      {% endif %}
+    </div>
+  </div>
+
+{% elif tab == 'schedule' %}
+  <div class="table-scroll"><table>
+    <thead><tr><th>Date</th><th>Opponent</th><th>Result</th><th>Line</th><th>ATS</th><th title="Market-adjusted model, before kickoff">Win prob</th><th></th></tr></thead>
+    <tbody>
+    {% for g in games %}
+      <tr>
+        <td class="nowrap muted">{{ g.start_time|kickoff }}</td>
+        <td class="nowrap">
+          <span class="muted">{{ 'vs' if g.is_home and not g.neutral_site else ('N' if g.neutral_site else '@') }}</span>
+          {{ team_link(league, g.opp.id, {'display_name': g.opp.name, 'logo': g.opp.logo}, g.opp.rank) }}
+          {% if g.notes %}<div class="note">{{ g.notes }}</div>{% endif %}
+        </td>
+        <td class="nowrap">{% if g.result is defined %}<span class="result {{ g.result|lower }}">{{ g.result }}</span> {{ g.score }}{% else %}<span class="muted">–</span>{% endif %}</td>
+        <td>{{ g.team_spread|signed if g.team_spread is not none else '–' }}</td>
+        <td>{% if g.covered is defined %}<span class="mark {{ 'hit' if g.covered else 'miss' }}">{{ 'Cover' if g.covered else 'Miss' }}</span>{% else %}–{% endif %}</td>
+        <td>{{ g.team_win_prob|pct }}</td>
+        <td class="small"><a href="{{ url_for('game', league=league, game_id=g.game_id) }}">{{ 'Box' if g.completed else 'Preview' }}</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">No games.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+
+{% elif tab == 'stats' %}
+  {% for title, (sort_key, cols, rows) in stat_tables.items() if rows %}
+    <h2>{{ title }}</h2>
+    <div class="table-scroll"><table class="stats-table">
+      <thead><tr><th>Player</th><th>GP</th>{% for c in cols %}<th>{{ stat_labels[c] }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr><td class="nowrap">{{ r.name }} <small class="muted">{{ r.position or '' }}</small></td><td>{{ r.games }}</td>
+          {% for c in cols %}<td>{{ stat(r[c], decimals.get(c, 0)) }}</td>{% endfor %}</tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <p class="muted">No player stats for this season yet.</p>
+  {% endfor %}
+
+{% elif tab == 'roster' %}
+  {% for group_name, players in roster.items() %}
+    <h2>{{ group_name }} <small class="muted">· {{ players|length }}</small></h2>
+    <div class="table-scroll"><table class="roster">
+      <thead><tr><th>#</th><th>Name</th><th>Pos</th><th>{{ 'Exp' if league == 'nfl' else 'Class' }}</th><th>Ht</th><th>Wt</th><th>{{ 'College' if league == 'nfl' else 'Hometown' }}</th></tr></thead>
+      <tbody>
+      {% for p in players %}
+        <tr>
+          <td class="muted">{{ p.jersey if p.jersey is not none else '' }}</td>
+          <td class="nowrap">{% if p.headshot %}<img class="headshot" src="{{ p.headshot }}" alt="" loading="lazy">{% endif %}{{ p.name }}</td>
+          <td>{{ p.position or '' }}</td>
+          <td>{{ p.experience or '' }}</td>
+          <td class="nowrap">{% if p.height %}{{ p.height // 12 }}'{{ p.height % 12 }}"{% endif %}</td>
+          <td>{{ p.weight or '' }}</td>
+          <td class="muted">{{ p.origin or '' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <p class="muted">No roster for this season.</p>
+  {% endfor %}
+{% endif %}
+{% endblock %}

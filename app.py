@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, redirect, render_template, request, url_for
 
+import web_data
 from database import closing_lines, connect
 
 app = Flask(__name__)
@@ -255,56 +256,160 @@ def game(league, game_id):
 @app.route("/<league>/ratings")
 def ratings(league):
     league_or_404(league)
-    season = query("SELECT max(season) AS s FROM games WHERE league = %s", (league,))[0]["s"]
-    # Each team's ratings going into its next game (or its last one if the season is over).
-    rows = query(
-        """
-        WITH team_games AS (
-            SELECT gf.game_id, gf.start_time, gf.completed, gf.features, g.home_team_id AS team, 'home' AS side
-            FROM game_features gf JOIN games g USING (league, game_id)
-            WHERE gf.league = %(league)s AND gf.season = %(season)s
-            UNION ALL
-            SELECT gf.game_id, gf.start_time, gf.completed, gf.features, g.away_team_id, 'away'
-            FROM game_features gf JOIN games g USING (league, game_id)
-            WHERE gf.league = %(league)s AND gf.season = %(season)s
-        ), pick AS (
-            SELECT DISTINCT ON (team) team, side, features
-            FROM team_games
-            ORDER BY team, completed, CASE WHEN completed THEN -extract(epoch FROM start_time)
-                                           ELSE extract(epoch FROM start_time) END
-        )
-        SELECT t.team_id, t.display_name, t.abbreviation, t.logo, p.side, p.features
-        FROM pick p JOIN teams t ON t.league = %(league)s AND t.team_id = p.team
-        """,
-        {"league": league, "season": season},
-    )
-    records = {r["team"]: r for r in query(
-        """
-        SELECT team, sum(win) AS wins, sum(loss) AS losses FROM (
-            SELECT home_team_id AS team, (home_score > away_score)::int AS win, (home_score < away_score)::int AS loss
-            FROM games WHERE league = %(league)s AND season = %(season)s AND completed AND season_type = 2
-            UNION ALL
-            SELECT away_team_id, (away_score > home_score)::int, (away_score < home_score)::int
-            FROM games WHERE league = %(league)s AND season = %(season)s AND completed AND season_type = 2
-        ) x GROUP BY team
-        """,
-        {"league": league, "season": season},
-    )}
-    teams = []
-    for r in rows:
-        f, side = r["features"], r["side"]
-        rec = records.get(r["team_id"], {})
-        teams.append({
-            "name": r["display_name"], "abbr": r["abbreviation"], "logo": r["logo"],
-            "record": f"{rec.get('wins', 0)}-{rec.get('losses', 0)}",
-            "elo": f.get(f"{side}_elo"), "off": f.get(f"{side}_ridge_off_epa"), "def": f.get(f"{side}_ridge_def_epa"),
-            "qb": f.get(f"{side}_qb_rating"), "form": f.get(f"{side}_ewm_margin"),
-        })
-    teams = [t for t in teams if t["elo"] is not None]
-    teams.sort(key=lambda t: -t["elo"])
-    if league == "cfb":
-        teams = [t for t in teams if t["record"] != "0-0" or t["elo"] > 1400][:150]
+    season = web_data.seasons(league)[0]
+    recs = web_data.records(league, season)
+    team_map = web_data.teams(league)
+    teams = sorted((dict(t, team=team_map.get(t["team_id"]), record=(recs.get(t["team_id"]) or {}).get("overall", "0-0"))
+                    for t in web_data.power_ratings(league, season).values() if t.get("rank")),
+                   key=lambda t: t["rank"])
     return render_template("ratings.html", league=league, league_name=LEAGUES[league], teams=teams, season=season)
+
+
+@app.route("/<league>/teams")
+def teams_page(league):
+    league_or_404(league)
+    season = web_data.seasons(league)[0]
+    groups = web_data.standings(league, season)
+    power = web_data.power_ratings(league, season)
+    ranks = web_data.latest_ap_ranks(league, season) if league == "cfb" else {}
+    for group in groups:
+        for t in group["teams"]:
+            t["elo_rank"] = (power.get(t["team_id"]) or {}).get("rank")
+            t["ap_rank"] = ranks.get(t["team_id"])
+    return render_template("teams.html", league=league, league_name=LEAGUES[league], groups=groups, season=season)
+
+
+@app.route("/<league>/teams/<team_id>")
+def team_page(league, team_id):
+    league_or_404(league)
+    team = web_data.teams(league).get(team_id)
+    if team is None:
+        abort(404)
+    season = web_data.resolve_season(league, request.args.get("season", type=int))
+    tab = request.args.get("tab", "home")
+    if tab not in ("home", "schedule", "stats", "roster"):
+        tab = "home"
+
+    aff = web_data.affiliations(league, season).get(team_id) or {}
+    record = web_data.records(league, season).get(team_id)
+    power = web_data.power_ratings(league, season).get(team_id)
+    season_stats = web_data.team_seasons(league, season).get(team_id)
+    ap_rank = web_data.latest_ap_ranks(league, season).get(team_id) if league == "cfb" else None
+
+    games = query(GAME_SQL + " WHERE g.league = %s AND g.season = %s AND (g.home_team_id = %s OR g.away_team_id = %s) "
+                  "ORDER BY g.start_time", (league, season, team_id, team_id))
+    attach_predictions(league, games)
+    for g in games:
+        home = g["home_team_id"] == team_id
+        g["is_home"] = home
+        g["opp"] = {"id": g["away_team_id"] if home else g["home_team_id"],
+                    "name": g["away_short"] if home else g["home_short"],
+                    "abbr": g["away_abbr"] if home else g["home_abbr"],
+                    "logo": g["away_logo"] if home else g["home_logo"],
+                    "rank": g["away_rank"] if home else g["home_rank"]}
+        g["team_rank"] = g["home_rank"] if home else g["away_rank"]
+        g["team_win_prob"] = None if g["win_prob"] is None else (g["win_prob"] if home else 1 - g["win_prob"])
+        spread = g["line"].get("spread")
+        g["team_spread"] = None if spread is None else (spread if home else -spread)
+        if g["completed"] and g["home_score"] is not None:
+            us, them = (g["home_score"], g["away_score"]) if home else (g["away_score"], g["home_score"])
+            g["result"] = "W" if us > them else "L" if us < them else "T"
+            g["score"] = f"{us}-{them}"
+            if g["team_spread"] is not None and us - them + g["team_spread"] != 0:
+                g["covered"] = us - them + g["team_spread"] > 0
+
+    stat_tables = web_data.team_player_stats(league, season, team_id) if tab in ("home", "stats") else {}
+    upcoming = next((g for g in games if not g["completed"]), None)
+    recent = [g for g in games if g.get("result")][-5:][::-1]
+    group = None
+    if tab == "home":
+        name = aff.get("division") if league == "nfl" else aff.get("conference")
+        group = next((grp for grp in web_data.standings(league, season) if grp["name"] == name), None)
+    return render_template(
+        "team.html", league=league, league_name=LEAGUES[league], team=team, team_id=team_id, season=season,
+        seasons=web_data.seasons(league), tab=tab, aff=aff, record=record, power=power, season_stats=season_stats,
+        ap_rank=ap_rank, games=games, upcoming=upcoming, recent=recent, group=group, stat_tables=stat_tables,
+        leaders=web_data.team_leaders(stat_tables) if stat_tables else [],
+        roster=web_data.roster_groups(league, season, team_id) if tab == "roster" else {},
+        stat_labels=web_data.STAT_LABELS, decimals=web_data.DECIMALS,
+    )
+
+
+@app.route("/<league>/standings")
+def standings_page(league):
+    league_or_404(league)
+    season = web_data.resolve_season(league, request.args.get("season", type=int))
+    groups = web_data.standings(league, season)
+    names = [g["name"] for g in groups]
+    selected = request.args.get("group") or ("all" if league == "nfl" else (names[0] if names else None))
+    if selected != "all" and selected not in names:
+        selected = "all"
+    shown = groups if selected == "all" else [g for g in groups if g["name"] == selected]
+    ranks = web_data.latest_ap_ranks(league, season) if league == "cfb" else {}
+    return render_template("standings.html", league=league, league_name=LEAGUES[league], season=season,
+                           seasons=web_data.seasons(league), groups=shown, names=names, selected=selected, ranks=ranks)
+
+
+@app.route("/<league>/rankings")
+def rankings_page(league):
+    league_or_404(league)
+    if league != "cfb":
+        return redirect(url_for("ratings", league=league))
+    season = web_data.resolve_season(league, request.args.get("season", type=int))
+    weeks = web_data.poll_weeks(league, season)
+    for w in weeks:
+        w["value"] = f"{w['season_type']}:{w['week']}"
+        w["label"] = "Final / Postseason" if w["season_type"] == 3 else f"Week {w['week']}"
+    selected = next((w for w in weeks if w["value"] == request.args.get("week")), weeks[0] if weeks else None)
+    tables = web_data.poll_tables(league, season, selected["season_type"], selected["week"]) if selected else []
+    return render_template("rankings.html", league=league, league_name=LEAGUES[league], season=season,
+                           seasons=web_data.seasons(league), weeks=weeks, selected=selected, tables=tables)
+
+
+def stats_filters(league):
+    season = web_data.resolve_season(league, request.args.get("season", type=int))
+    groups = sorted({(a["division"] if league == "nfl" else a["conference"])
+                     for tid, a in web_data.affiliations(league, season).items()
+                     if web_data.is_major(league, tid, season) and (a["division"] if league == "nfl" else a["conference"])})
+    if league == "nfl":
+        groups = ["AFC", "NFC"] + groups
+    group = request.args.get("group") or None
+    return season, groups, (group if group in groups else None)
+
+
+@app.route("/<league>/stats")
+def stats_page(league):
+    league_or_404(league)
+    season, groups, group = stats_filters(league)
+    tab = request.args.get("tab", "player")
+    if tab not in ("player", "team"):
+        tab = "player"
+    sections = {}
+    if tab == "player":
+        for name, specs in web_data.PLAYER_LEADERS.items():
+            sections[name] = [web_data.player_board(league, season, spec, group, limit=5) for spec in specs]
+        sections["offense"].append(web_data.qb_epa_leaders(league, season, group, limit=5))
+    else:
+        for name, specs in web_data.TEAM_LEADERS.items():
+            sections[name] = [web_data.team_board(league, season, spec, group, limit=5) for spec in specs]
+    return render_template("stats.html", league=league, league_name=LEAGUES[league], season=season,
+                           seasons=web_data.seasons(league), groups=groups, group=group, tab=tab, sections=sections)
+
+
+@app.route("/<league>/stats/<tab>/<slug>")
+def stats_leaders_page(league, tab, slug):
+    league_or_404(league)
+    season, groups, group = stats_filters(league)
+    if tab == "player" and slug == web_data.QB_EPA_SLUG:
+        board = web_data.qb_epa_leaders(league, season, group, limit=100)
+    elif tab == "player" and web_data.find_player_spec(slug):
+        board = web_data.player_board(league, season, web_data.find_player_spec(slug), group, limit=100)
+    elif tab == "team" and web_data.find_team_spec(slug):
+        board = web_data.team_board(league, season, web_data.find_team_spec(slug), group, limit=200)
+    else:
+        abort(404)
+    return render_template("stats_leaders.html", league=league, league_name=LEAGUES[league], season=season,
+                           seasons=web_data.seasons(league), groups=groups, group=group, tab=tab, board=board)
 
 
 _metrics_cache = {"at": 0.0, "data": None}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}{{ board.title }} · {{ league_name }} {{ season }}{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('stats_page', league=league, season=season, group=group, tab=tab) }}">← {{ league_name }} stats</a></p>
+<div class="page-head">
+  <div>
+    <h1>{{ board.title }}</h1>
+    <p class="muted">{{ season }}{% if group %} · {{ group }}{% endif %}</p>
+  </div>
+  <form class="picker" method="get">
+    <select name="season" onchange="this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="group" onchange="this.form.submit()" aria-label="Filter">
+      <option value="">{{ 'All teams' if league == 'nfl' else 'All FBS' }}</option>
+      {% for g in groups %}<option value="{{ g }}" {{ 'selected' if g == group }}>{{ g }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="table-scroll"><table>
+  <thead><tr><th>#</th>{% if tab == 'player' %}<th>Player</th><th>Pos</th>{% endif %}<th>Team</th><th>GP</th><th>{{ board.title }}</th></tr></thead>
+  <tbody>
+  {% for r in board.rows %}
+    <tr>
+      <td class="muted">{{ loop.index }}</td>
+      {% if tab == 'player' %}<td class="nowrap"><strong>{{ r.name }}</strong></td><td>{{ r.position or '' }}</td>{% endif %}
+      <td class="nowrap">{{ team_link(league, r.team_id, r.team, short=True) }}</td>
+      <td>{{ r.games }}</td>
+      <td><strong>{{ r.value }}</strong></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No data.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endblock %}

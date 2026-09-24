@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}{{ league_name }} stats {{ season }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }} stats</h1>
+    <p class="muted">{{ season }}{% if group %} · {{ group }}{% endif %}</p>
+  </div>
+  <form class="picker" method="get">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <select name="season" onchange="this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="group" onchange="this.form.submit()" aria-label="Filter">
+      <option value="">{{ 'All teams' if league == 'nfl' else 'All FBS' }}</option>
+      {% for g in groups %}<option value="{{ g }}" {{ 'selected' if g == group }}>{{ g }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="tabs">
+  <a class="{{ 'active' if tab == 'player' }}" href="{{ url_for('stats_page', league=league, season=season, group=group, tab='player') }}">Players</a>
+  <a class="{{ 'active' if tab == 'team' }}" href="{{ url_for('stats_page', league=league, season=season, group=group, tab='team') }}">Teams</a>
+</div>
+{% for section, boards in sections.items() %}
+  <h2>{{ section|capitalize }}</h2>
+  <div class="board-grid">
+    {% for board in boards %}
+      <section class="panel board">
+        <h3>{{ board.title }}</h3>
+        <ol>
+          {% for r in board.rows %}
+            <li>
+              {% if tab == 'player' %}
+                <span class="who">{{ r.name }} <small class="muted">{{ r.position or '' }} · {{ r.team.abbreviation if r.team else '' }}</small></span>
+              {% else %}
+                <span class="who">{{ team_link(league, r.team_id, r.team, short=True) }}</span>
+              {% endif %}
+              <strong>{{ r.value }}</strong>
+            </li>
+          {% else %}
+            <li class="muted">No data</li>
+          {% endfor %}
+        </ol>
+        <a class="small" href="{{ url_for('stats_leaders_page', league=league, tab=tab, slug=board.slug, season=season, group=group) }}">View all →</a>
+      </section>
+    {% endfor %}
+  </div>
+{% endfor %}
+<p class="muted small">{{ 'Regular season.' if league == 'nfl' else 'Includes bowls and playoffs.' }} Rate stats need 14 pass attempts or 6.25 carries per team game; QB EPA needs 15 dropbacks per team game. EPA comes from our own play-by-play model.</p>
+{% endblock %}
