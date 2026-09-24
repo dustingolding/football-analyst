@@ -111,6 +111,19 @@ CREATE TABLE IF NOT EXISTS team_game_stats (
     PRIMARY KEY (league, game_id, team_id, source)
 );
 
+-- Per-player stats for a played game (e.g. QB dropback efficiency from nflverse play-by-play).
+CREATE TABLE IF NOT EXISTS player_game_stats (
+    league      TEXT        NOT NULL,
+    game_id     TEXT        NOT NULL,   -- ESPN game_id
+    player_id   TEXT        NOT NULL,   -- source's player id (nflverse: gsis id)
+    team_id     TEXT        NOT NULL,   -- ESPN team_id
+    source      TEXT        NOT NULL,
+    player_name TEXT,
+    stats       JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id, player_id, source)
+);
+
 -- One row per game of pre-game features (features.py); targets are NULL until the game is played.
 CREATE TABLE IF NOT EXISTS game_features (
     league        TEXT        NOT NULL,

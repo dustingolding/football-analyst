@@ -206,6 +206,68 @@ def form_features(long, extra_stats=()):
     return feats
 
 
+# Tuned on 2008-2021 (fit to the part of the margin Elo doesn't explain).
+QB_PRIOR_EPA = -0.15        # EPA/dropback assumed for a QB with no history (backup level)
+QB_PRIOR_DROPBACKS = 100    # shrinkage toward the prior, in (weighted) dropbacks
+QB_HALFLIFE_DAYS = 1460     # a QB's track record stays informative for years
+
+
+def load_qb_games(conn, league):
+    rows = conn.execute(
+        """
+        SELECT p.player_id, g.start_time, (p.stats->>'dropbacks')::float, (p.stats->>'epa_sum')::float
+        FROM player_game_stats p JOIN games g USING (league, game_id)
+        WHERE p.league = %s
+        """,
+        (league,),
+    ).fetchall()
+    qb_games = pd.DataFrame(rows, columns=["qb", "start_time", "dropbacks", "epa_sum"])
+    qb_games["start_time"] = pd.to_datetime(qb_games["start_time"], utc=True)
+    return qb_games
+
+
+def qb_ratings(games, nfl, qb_games, prior=QB_PRIOR_EPA, shrink=QB_PRIOR_DROPBACKS, halflife=QB_HALFLIFE_DAYS):
+    """Pre-game rating of each team's starting QB, from that QB's earlier games on any team.
+
+    rating = (sum w*EPA + shrink*prior) / (sum w*dropbacks + shrink), w = 0.5^(days ago / halflife),
+    using only games before kickoff. Starters come from nflverse; where it has none yet (games
+    beyond the coming week) the team's most recent starter is assumed.
+    Returns per (game_id, team): qb_rating, qb_experience (log weighted dropbacks), and
+    qb_vs_prev (rating minus the rating of the team's previous starter, 0 if the same QB).
+    """
+    starters = pd.concat([
+        games[["game_id", "start_time", f"{side}_team_id"]].rename(columns={f"{side}_team_id": "team"})
+        .merge(nfl[["game_id", f"{side}_qb"]].rename(columns={f"{side}_qb": "qb"}), on="game_id", how="left")
+        for side in ("home", "away")
+    ]).sort_values(["team", "start_time"], kind="stable").reset_index(drop=True)
+    starters["qb"] = starters.groupby("team")["qb"].ffill()
+    starters["prev_qb"] = starters.groupby("team")["qb"].shift()
+
+    history = {
+        qb: (g["start_time"].dt.tz_convert(None).to_numpy(), g["dropbacks"].to_numpy(), g["epa_sum"].to_numpy())
+        for qb, g in qb_games.groupby("qb")
+    }
+
+    def rate(qb, when):
+        if not isinstance(qb, str) or qb not in history:
+            return prior, 0.0
+        times, dropbacks, epa = history[qb]
+        age = (when - times) / np.timedelta64(1, "D")
+        w = np.where(age > 0, 0.5 ** (age / halflife), 0.0)
+        weighted_db = float(w @ dropbacks)
+        return (float(w @ epa) + shrink * prior) / (weighted_db + shrink), weighted_db
+
+    kickoff = starters["start_time"].dt.tz_convert(None).to_numpy()
+    rated = [rate(qb, t) for qb, t in zip(starters["qb"], kickoff)]
+    prev = [rate(qb, t)[0] for qb, t in zip(starters["prev_qb"], kickoff)]
+    starters["qb_rating"] = [r for r, _ in rated]
+    starters["qb_experience"] = np.log1p([d for _, d in rated])
+    starters["qb_vs_prev"] = np.where(
+        starters["prev_qb"].isna() | (starters["qb"] == starters["prev_qb"]), 0.0, starters["qb_rating"] - prev
+    )
+    return starters[["game_id", "team", "qb_rating", "qb_experience", "qb_vs_prev"]]
+
+
 def qb_changed(games, nfl):
     """1 if a team's starting QB differs from its previous game's starter (NFL only)."""
     starters = pd.concat([
@@ -234,6 +296,9 @@ def build(conn, league):
     if league == "nfl":
         nfl = load_nflverse(conn)
         form = form.merge(qb_changed(games, nfl), on=["game_id", "team"], how="left")
+        qb_games = load_qb_games(conn, league)
+        if len(qb_games):
+            form = form.merge(qb_ratings(games, nfl, qb_games), on=["game_id", "team"], how="left")
         extra = nfl.drop(columns=["home_qb", "away_qb"])
 
     team_cols = [c for c in form.columns if c not in ("game_id", "team", "start_time")]

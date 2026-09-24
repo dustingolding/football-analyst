@@ -1,8 +1,9 @@
-"""Per-team NFL efficiency (EPA, success rate) from nflverse play-by-play.
+"""Per-team and per-QB NFL efficiency (EPA, success rate) from nflverse play-by-play.
 
 Play-by-play files (~20 MB per season) are cached in data/nflverse/ instead of
 raw_payloads; they are the raw layer here and can be re-parsed at any time. Only
-per-team, per-game aggregates go into team_game_stats.
+per-team, per-game aggregates go into team_game_stats, and per-QB dropback
+aggregates into player_game_stats.
 
 Plays counted: runs and passes with an EPA value, while the game is competitive
 (win probability 5-95%), so garbage time doesn't distort a team's numbers.
@@ -25,7 +26,8 @@ from database import connect, init_db
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.csv.gz"
 CACHE_DIR = Path(__file__).parent / "data" / "nflverse"
 SOURCE = "nflverse_pbp"
-COLUMNS = ["game_id", "posteam", "defteam", "pass", "rush", "epa", "success", "wp", "cpoe"]
+COLUMNS = ["game_id", "posteam", "defteam", "pass", "rush", "epa", "success", "wp", "cpoe",
+           "qb_dropback", "qb_epa", "id", "name"]
 WP_RANGE = (0.05, 0.95)
 # Play-by-play uses current abbreviations for relocated teams; games.csv keeps the old ones.
 CURRENT_ABBR = {"STL": "LA", "SD": "LAC", "OAK": "LV"}
@@ -64,6 +66,24 @@ def team_stats(plays):
     return offense.join(defense, how="outer").reset_index()
 
 
+def qb_stats(plays):
+    """One row per (nflverse game_id, team, QB): dropback volume and efficiency.
+
+    `id` is the QB on dropbacks (passes, sacks, scrambles); qb_epa credits the QB for the
+    play except fumbles after a completion.
+    """
+    plays = plays[(plays["qb_dropback"] == 1) & plays["qb_epa"].notna() & plays["id"].notna()]
+    plays = plays[plays["wp"].between(*WP_RANGE)]
+    g = plays.groupby(["game_id", "posteam", "id"])
+    return pd.DataFrame({
+        "name": g["name"].first(),
+        "dropbacks": g.size(),
+        "epa_sum": g["qb_epa"].sum(),
+        "success": g["success"].mean(),
+        "cpoe": g["cpoe"].mean(),
+    }).reset_index().rename(columns={"posteam": "team", "id": "player_id"})
+
+
 def load_season(conn, season, refresh, game_map):
     plays = pd.read_csv(pbp_file(season, refresh), usecols=COLUMNS, low_memory=False)
     stats = team_stats(plays)
@@ -85,7 +105,27 @@ def load_season(conn, season, refresh, game_map):
             "ON CONFLICT (league, game_id, team_id, source) DO UPDATE SET stats = EXCLUDED.stats, updated_at = now()",
             rows,
         )
-    print(f"[nflverse_pbp] {season}: {len(plays)} plays -> {len(rows)} team-games "
+
+    qb_rows = []
+    for record in qb_stats(plays).to_dict("records"):
+        match = game_map.get(record.pop("game_id"))
+        team = record.pop("team")
+        team = CURRENT_ABBR.get(team, team)
+        if match is None or team not in match:
+            continue
+        player_id, name = record.pop("player_id"), record.pop("name")
+        values = {k: (None if pd.isna(v) else round(float(v), 5)) for k, v in record.items()}
+        qb_rows.append(("nfl", match["espn"], player_id, match[team], SOURCE, name, Jsonb(values)))
+    with conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO player_game_stats (league, game_id, player_id, team_id, source, player_name, stats) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (league, game_id, player_id, source) DO UPDATE "
+            "SET team_id = EXCLUDED.team_id, player_name = EXCLUDED.player_name, stats = EXCLUDED.stats, "
+            "updated_at = now()",
+            qb_rows,
+        )
+    print(f"[nflverse_pbp] {season}: {len(plays)} plays -> {len(rows)} team-games, {len(qb_rows)} QB-games "
           f"({stats['game_id'].nunique()} games in file)", flush=True)
 
 
