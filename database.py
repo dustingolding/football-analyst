@@ -124,6 +124,17 @@ CREATE TABLE IF NOT EXISTS player_game_stats (
     PRIMARY KEY (league, game_id, player_id, source)
 );
 
+-- Per-team, per-season context (e.g. CFBD SP+, recruiting, talent, returning production).
+CREATE TABLE IF NOT EXISTS team_seasons (
+    league      TEXT        NOT NULL,
+    season      INTEGER     NOT NULL,
+    team_id     TEXT        NOT NULL,   -- ESPN team_id
+    source      TEXT        NOT NULL,
+    stats       JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, season, team_id, source)
+);
+
 -- One row per game of pre-game features (features.py); targets are NULL until the game is played.
 CREATE TABLE IF NOT EXISTS game_features (
     league        TEXT        NOT NULL,

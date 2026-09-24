@@ -285,6 +285,44 @@ def qb_ratings(games, starters_by_game, qb_games, prior=QB_PRIOR_EPA, shrink=QB_
     return starters[["game_id", "team", "qb_rating", "qb_experience", "qb_vs_prev"]]
 
 
+RECRUITING_CLASSES = 4  # recruiting strength = average of the last four signing classes
+
+
+def preseason_context(conn, league, games):
+    """Per (game_id, team): what was known about the team before its season started.
+
+    Previous season's final SP+ (the current season's SP+ updates with games already played,
+    so it would leak), the four-class recruiting average, the talent composite and returning
+    production (all published before the season).
+    """
+    rows = conn.execute("SELECT season, team_id, stats FROM team_seasons WHERE league = %s", (league,)).fetchall()
+    if not rows:
+        return None
+    seasons = pd.DataFrame([{"season": r[0], "team": r[1], **r[2]} for r in rows])
+    seasons = seasons.reindex(columns=["season", "team", "sp_rating", "sp_offense", "sp_defense", "recruiting_points",
+                                       "talent", "returning_ppa_pct", "returning_passing_ppa_pct"])
+    by_team = seasons.set_index(["team", "season"]).sort_index()
+
+    teams = pd.concat([
+        games[["game_id", "season", f"{side}_team_id"]].rename(columns={f"{side}_team_id": "team"}) for side in ("home", "away")
+    ])
+    keys = list(zip(teams["team"], teams["season"]))
+    prev = by_team[["sp_rating", "sp_offense", "sp_defense"]].reindex([(t, s - 1) for t, s in keys])
+    current = by_team[["talent", "returning_ppa_pct", "returning_passing_ppa_pct"]].reindex(keys)
+    recruiting = by_team["recruiting_points"]
+    classes = np.column_stack([recruiting.reindex([(t, s - k) for t, s in keys]).to_numpy()
+                               for k in range(RECRUITING_CLASSES)])
+    counts = (~np.isnan(classes)).sum(axis=1)
+    recruiting_avg = np.where(counts > 0, np.nansum(classes, axis=1) / np.maximum(counts, 1), np.nan)
+    return pd.DataFrame({
+        "game_id": teams["game_id"].to_numpy(), "team": teams["team"].to_numpy(),
+        "prev_sp_rating": prev["sp_rating"].to_numpy(), "prev_sp_offense": prev["sp_offense"].to_numpy(),
+        "prev_sp_defense": prev["sp_defense"].to_numpy(), "recruiting_avg": recruiting_avg,
+        "talent": current["talent"].to_numpy(), "returning_ppa_pct": current["returning_ppa_pct"].to_numpy(),
+        "returning_passing_ppa_pct": current["returning_passing_ppa_pct"].to_numpy(),
+    })
+
+
 def previous_starters(games, qb_games):
     """Pre-game starter guess where no source lists starters (CFB): the QB with the most
     dropbacks in the team's previous game. Returns a frame shaped like load_nflverse's
@@ -339,6 +377,10 @@ def build(conn, league):
     if len(qb_games) and starters is not None:
         rated_games = adjust_qb_games(qb_games, ridge) if ridge is not None else qb_games
         form = form.merge(qb_ratings(games, starters, rated_games), on=["game_id", "team"], how="left")
+
+    context = preseason_context(conn, league, games)
+    if context is not None:
+        form = form.merge(context, on=["game_id", "team"], how="left")
 
     team_cols = [c for c in form.columns if c not in ("game_id", "team", "start_time")]
     df = games.copy()

@@ -49,7 +49,9 @@ BASE_PARAMS = {
 # Compact inputs for the linear variant (missing ones, e.g. EPA for CFB, are skipped).
 LINEAR_FEATURES = {
     "win": ["elo_margin", "diff_ewm_margin", "diff_ridge_net_epa", "diff_ridge_net_success",
-            "diff_qb_rating", "diff_qb_vs_prev", "diff_qb_changed", "diff_rest_days", "neutral_site"],
+            "diff_qb_rating", "diff_qb_vs_prev", "diff_qb_changed", "diff_rest_days", "neutral_site",
+            # CFB preseason context (absent for the NFL, so skipped there)
+            "diff_prev_sp_rating", "diff_recruiting_avg", "diff_talent", "diff_returning_ppa_pct"],
     "total": ["home_ewm_points_for", "away_ewm_points_for", "home_ewm_points_against",
               "away_ewm_points_against", "dome", "wind", "temp"],
 }
