@@ -1,0 +1,26 @@
+# NPM terminates public HTTPS for dev.sidelinewire.com and forwards https -> 192.168.10.9:8040,
+# Traefik's "dev" entrypoint (see traefik-config.yaml).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: football-analyst
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: dev
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - dev.sidelinewire.com
+  rules:
+    - host: dev.sidelinewire.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

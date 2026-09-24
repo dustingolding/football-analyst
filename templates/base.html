@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SidelineWire{% endblock %} · SidelineWire Dev</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="brand" href="{{ url_for('home') }}">Sideline<span>Wire</span> <small>dev</small></a>
+      <nav>
+        {% for key, name in leagues.items() %}
+          <a href="{{ url_for('slate', league=key) }}" class="{{ 'active' if league == key and request.endpoint == 'slate' }}">{{ key|upper }}</a>
+          <a href="{{ url_for('ratings', league=key) }}" class="{{ 'active' if league == key and request.endpoint == 'ratings' }}">{{ key|upper }} Ratings</a>
+        {% endfor %}
+        <a href="{{ url_for('models') }}" class="{{ 'active' if request.endpoint == 'models' }}">Models</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="wrap footer">
+    Predictions are computed ahead of time from games completed before kickoff. For entertainment and research, not betting advice.
+  </footer>
+</body>
+</html>

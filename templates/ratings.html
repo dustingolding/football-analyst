@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ league_name }} ratings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }} ratings</h1>
+    <p class="muted">{{ season }} · each team going into its next game</p>
+  </div>
+</div>
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Team</th><th>Record</th><th>Elo</th>
+      <th title="Opponent-adjusted offensive EPA per play">Off EPA</th>
+      <th title="Opponent-adjusted EPA per play allowed (lower is better)">Def EPA</th>
+      <th title="Starting QB, EPA per dropback">QB</th>
+      <th title="Weighted recent scoring margin">Form</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in teams %}
+    <tr>
+      <td class="muted">{{ loop.index }}</td>
+      <td class="nowrap">{% if t.logo %}<img class="logo" src="{{ t.logo }}" alt="" loading="lazy">{% endif %}{{ t.name }}</td>
+      <td>{{ t.record }}</td>
+      <td><strong>{{ t.elo|num(0) }}</strong></td>
+      <td>{{ t.off|signed(3) }}</td>
+      <td>{{ t.def|signed(3) }}</td>
+      <td>{{ t.qb|signed(3) }}</td>
+      <td>{{ t.form|signed }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ g.away_abbr }} at {{ g.home_abbr }}{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('slate', league=league, season=g.season, type=g.season_type, week=g.week) }}">← {{ league_name }} {{ g.season }} week {{ g.week }}</a></p>
+
+<section class="scoreboard">
+  <div class="side">
+    {% if g.away_logo %}<img src="{{ g.away_logo }}" alt="">{% endif %}
+    <div class="name">{% if g.away_rank %}<em>{{ g.away_rank }}</em> {% endif %}{{ g.away_name }}</div>
+    {% if g.completed %}<div class="score">{{ g.away_score }}</div>{% endif %}
+  </div>
+  <div class="mid">
+    <div class="muted">{{ g.start_time|kickoff }}</div>
+    <div class="big">{{ 'vs' if g.neutral_site else '@' }}</div>
+    <div class="muted small">{{ g.venue_name or '' }}{% if g.venue_city %} · {{ g.venue_city }}{% if g.venue_state %}, {{ g.venue_state }}{% endif %}{% endif %}</div>
+    {% if g.notes %}<div class="note">{{ g.notes }}</div>{% endif %}
+  </div>
+  <div class="side">
+    {% if g.home_logo %}<img src="{{ g.home_logo }}" alt="">{% endif %}
+    <div class="name">{% if g.home_rank %}<em>{{ g.home_rank }}</em> {% endif %}{{ g.home_name }}</div>
+    {% if g.completed %}<div class="score">{{ g.home_score }}</div>{% endif %}
+  </div>
+</section>
+
+<div class="cards">
+  <div class="card"><span>Vegas spread</span><strong>{{ g.spread_text }}</strong></div>
+  <div class="card"><span>Vegas total</span><strong>{{ g.total|num }}</strong></div>
+  <div class="card"><span>{{ g.home_abbr }} win probability</span><strong>{{ g.win_prob|pct }}</strong></div>
+  <div class="card"><span>Projected score</span><strong>{% if g.proj_home is defined %}{{ g.away_abbr }} {{ g.proj_away|round|int }} – {{ g.proj_home|round|int }} {{ g.home_abbr }}{% else %}–{% endif %}</strong></div>
+</div>
+
+<h2>Models</h2>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Model</th><th>{{ g.home_abbr }} win</th><th>Margin ({{ g.home_abbr }})</th><th>Total</th><th></th></tr></thead>
+  <tbody>
+  {% for label, note, p in models %}
+    <tr>
+      <td><strong>{{ label }}</strong></td>
+      <td>{{ p.home_win_prob|pct }}</td>
+      <td>{{ p.predicted_margin|signed }}</td>
+      <td>{{ p.predicted_total|num }}</td>
+      <td class="muted small">{{ note }}</td>
+    </tr>
+  {% endfor %}
+  {% if g.line.spread is not none %}
+    <tr class="vegas">
+      <td><strong>Vegas</strong></td>
+      <td>{{ g.line.home_prob|pct }}</td>
+      <td>{{ (-g.line.spread)|signed }}</td>
+      <td>{{ g.line.total|num }}</td>
+      <td class="muted small">Median closing line across sportsbooks.</td>
+    </tr>
+  {% endif %}
+  </tbody>
+</table>
+</div>
+
+{% if matchup %}
+<h2>Matchup</h2>
+<div class="table-scroll">
+<table class="matchup-table">
+  <thead><tr><th></th><th>{{ g.away_abbr }}</th><th>{{ g.home_abbr }}</th></tr></thead>
+  <tbody>
+  {% for label, home, away, digits, higher in matchup %}
+    {% set home_better = home is not none and away is not none and ((home > away) if higher else (home < away)) %}
+    {% set away_better = home is not none and away is not none and ((away > home) if higher else (away < home)) %}
+    <tr>
+      <td>{{ label }}</td>
+      <td class="{{ 'better' if away_better }}">{{ away|num(digits) }}</td>
+      <td class="{{ 'better' if home_better }}">{{ home|num(digits) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted small">All values are as of kickoff: built only from games completed before this one. EPA = expected points added per play, adjusted for opponents.</p>
+{% endif %}
+
+{% if books %}
+<h2>Sportsbooks</h2>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Book</th><th>Source</th><th>Spread</th><th>Open</th><th>Total</th><th>{{ g.away_abbr }} ML</th><th>{{ g.home_abbr }} ML</th></tr></thead>
+  <tbody>
+  {% for b in books %}
+    <tr>
+      <td>{{ b.provider }}</td><td class="muted">{{ b.source }}</td><td>{{ b.spread_text }}</td>
+      <td>{{ b.opening_home_spread|float|signed if b.opening_home_spread is not none else '–' }}</td>
+      <td>{{ b.total|float|num if b.total is not none else '–' }}</td>
+      <td>{{ b.away_moneyline if b.away_moneyline is not none else '–' }}</td>
+      <td>{{ b.home_moneyline if b.home_moneyline is not none else '–' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

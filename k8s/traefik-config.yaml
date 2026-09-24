@@ -1,0 +1,18 @@
+# k3s bundles Traefik; this adds the "dev" entrypoint NPM forwards to (https -> :8040).
+# Traefik serves its default self-signed certificate there; NPM terminates the public TLS.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      dev:
+        port: 8040
+        exposedPort: 8040
+        expose:
+          default: true
+        protocol: TCP
+        tls:
+          enabled: true

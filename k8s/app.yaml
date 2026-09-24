@@ -1,0 +1,61 @@
+# Web front end. Reads Postgres (Docker, published on the Docker bridge at 172.17.0.1)
+# as the read-only web_ro role; the connection string lives in the web-db Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: football-analyst
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: football-analyst-web:20260924-193327
+          imagePullPolicy: Never  # imported into k3s by deploy.sh; there is no registry
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: web-db
+                  key: DATABASE_URL
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: football-analyst
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

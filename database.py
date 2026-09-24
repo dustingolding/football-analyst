@@ -214,11 +214,12 @@ def get_raw_payload(conn, league, endpoint, params, source="espn"):
     return row[0] if row else None
 
 
-def closing_lines(conn, league):
+def closing_lines(conn, league, game_ids=None):
     """One consensus line per game: the median across sportsbooks of the closing spread, total,
     opening spread, and de-vigged home win probability from the moneylines.
 
     Returns {game_id: {"spread", "total", "open_spread", "home_prob"}} (values may be None).
+    game_ids limits it to those games (default: every game in the league).
     """
     home, away = IMPLIED_SQL.format(ml="home_moneyline"), IMPLIED_SQL.format(ml="away_moneyline")
     rows = conn.execute(
@@ -228,7 +229,7 @@ def closing_lines(conn, league):
                    CASE WHEN home_moneyline IS NOT NULL AND away_moneyline IS NOT NULL
                         THEN {home} / ({home} + {away}) END AS home_prob
             FROM odds
-            WHERE league = %s AND home_spread IS NOT NULL
+            WHERE league = %s AND home_spread IS NOT NULL AND (%s::text[] IS NULL OR game_id = ANY(%s::text[]))
         )
         SELECT game_id,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY home_spread),
@@ -237,7 +238,7 @@ def closing_lines(conn, league):
                percentile_cont(0.5) WITHIN GROUP (ORDER BY home_prob)
         FROM books GROUP BY game_id
         """,
-        (league,),
+        (league, game_ids, game_ids),
     ).fetchall()
     return {
         game_id: {"spread": spread, "total": total, "open_spread": open_spread, "home_prob": prob}

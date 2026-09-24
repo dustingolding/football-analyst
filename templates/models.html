@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Model performance{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>How the models do</h1>
+    <p class="muted">Test seasons {{ first_season }}–present: games none of the models were trained or tuned on. Every row is scored on the same games.</p>
+  </div>
+</div>
+{% for key, data in metrics.items() %}
+<h2>{{ leagues[key] }} <small class="muted">· {{ data.games }} games</small></h2>
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th title="Lower is better">Log loss</th>
+      <th title="Lower is better">Brier</th>
+      <th>Winners</th>
+      <th title="Average miss on the final margin, in points">Margin error</th>
+      <th title="Average miss on total points">Total error</th>
+      <th title="52.4% needed to profit at -110">Vs spread</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for label, note, m in data.rows %}
+    <tr class="{{ 'vegas' if label.startswith('Vegas') }}">
+      <td><strong>{{ label }}</strong></td>
+      <td>{{ m.log_loss|num(4) }}</td>
+      <td>{{ m.brier|num(4) }}</td>
+      <td>{{ m.accuracy|pct }}</td>
+      <td>{{ m.margin_mae|num(2) }}</td>
+      <td>{{ m.total_mae|num(2) }}</td>
+      <td>{{ (m.ats * 100)|num ~ '%' if m.ats is not none else '–' }}</td>
+      <td class="muted small">{{ note }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endfor %}
+<p class="muted small">Log loss and Brier score measure win probabilities (lower is better). "Vs spread" is how often the model's margin picked the side that covered the closing spread; 52.4% is break-even at standard -110 odds.</p>
+{% endblock %}
