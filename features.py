@@ -147,7 +147,8 @@ def ridge_ratings(long):
     X[:, 1] = obs["is_home"].to_numpy() * 2 - 1  # +1 home, -1 away (neutral sites are rare in the NFL)
     X[np.arange(len(obs)), 2 + obs["team"].map(index).to_numpy()] = 1.0
     X[np.arange(len(obs)), 2 + n + obs["team_opp"].map(index).to_numpy()] = 1.0
-    Y = obs[[f"off_{s}" for s in RIDGE_STATS]].to_numpy()
+    stats = [s for s in RIDGE_STATS if done[f"off_{s}"].notna().any()]  # CFB has no YAC data, etc.
+    Y = obs[[f"off_{s}" for s in stats]].to_numpy()
     penalty = np.full(2 + 2 * n, RIDGE_LAMBDA)
     penalty[:2] = 1e-6  # don't shrink the intercept or home edge
 
@@ -165,7 +166,7 @@ def ridge_ratings(long):
         beta = np.linalg.solve(Xu.T @ (Xu * w[:, None]) + np.diag(penalty), Xu.T @ (Y[use] * w[:, None]))
         idx = rows["team"].map(index).to_numpy()
         record = pd.DataFrame({"game_id": rows["game_id"].to_numpy(), "team": rows["team"].to_numpy()})
-        for k, stat in enumerate(RIDGE_STATS):
+        for k, stat in enumerate(stats):
             record[f"ridge_off_{stat}"] = beta[2 + idx, k]
             record[f"ridge_def_{stat}"] = beta[2 + n + idx, k]
         out.append(record)
@@ -242,18 +243,18 @@ def adjust_qb_games(qb_games, ridge):
     return adjusted
 
 
-def qb_ratings(games, nfl, qb_games, prior=QB_PRIOR_EPA, shrink=QB_PRIOR_DROPBACKS, halflife=QB_HALFLIFE_DAYS):
+def qb_ratings(games, starters_by_game, qb_games, prior=QB_PRIOR_EPA, shrink=QB_PRIOR_DROPBACKS, halflife=QB_HALFLIFE_DAYS):
     """Pre-game rating of each team's starting QB, from that QB's earlier games on any team.
 
     rating = (sum w*EPA + shrink*prior) / (sum w*dropbacks + shrink), w = 0.5^(days ago / halflife),
-    using only games before kickoff. Starters come from nflverse; where it has none yet (games
-    beyond the coming week) the team's most recent starter is assumed.
+    using only games before kickoff. starters_by_game has (game_id, home_qb, away_qb); where a
+    starter is missing (e.g. NFL games beyond the coming week) the team's most recent starter is assumed.
     Returns per (game_id, team): qb_rating, qb_experience (log weighted dropbacks), and
     qb_vs_prev (rating minus the rating of the team's previous starter, 0 if the same QB).
     """
     starters = pd.concat([
         games[["game_id", "start_time", f"{side}_team_id"]].rename(columns={f"{side}_team_id": "team"})
-        .merge(nfl[["game_id", f"{side}_qb"]].rename(columns={f"{side}_qb": "qb"}), on="game_id", how="left")
+        .merge(starters_by_game[["game_id", f"{side}_qb"]].rename(columns={f"{side}_qb": "qb"}), on="game_id", how="left")
         for side in ("home", "away")
     ]).sort_values(["team", "start_time"], kind="stable").reset_index(drop=True)
     starters["qb"] = starters.groupby("team")["qb"].ffill()
@@ -284,6 +285,23 @@ def qb_ratings(games, nfl, qb_games, prior=QB_PRIOR_EPA, shrink=QB_PRIOR_DROPBAC
     return starters[["game_id", "team", "qb_rating", "qb_experience", "qb_vs_prev"]]
 
 
+def previous_starters(games, qb_games):
+    """Pre-game starter guess where no source lists starters (CFB): the QB with the most
+    dropbacks in the team's previous game. Returns a frame shaped like load_nflverse's
+    (game_id, home_qb, away_qb)."""
+    primary = (qb_games.sort_values("dropbacks", ascending=False)
+               .drop_duplicates(["game_id", "team"])[["game_id", "team", "qb"]])
+    sides = []
+    for side in ("home", "away"):
+        team_games = games[["game_id", "start_time", f"{side}_team_id"]].rename(columns={f"{side}_team_id": "team"})
+        sides.append(team_games.assign(side=side))
+    rows = pd.concat(sides).merge(primary, on=["game_id", "team"], how="left")
+    rows = rows.sort_values(["team", "start_time"], kind="stable")
+    rows["qb"] = rows.groupby("team")["qb"].transform(lambda s: s.ffill().shift())
+    wide = rows.pivot(index="game_id", columns="side", values="qb")
+    return pd.DataFrame({"game_id": wide.index, "home_qb": wide.get("home"), "away_qb": wide.get("away")}).reset_index(drop=True)
+
+
 def qb_changed(games, nfl):
     """1 if a team's starting QB differs from its previous game's starter (NFL only)."""
     starters = pd.concat([
@@ -310,15 +328,17 @@ def build(conn, league):
         form = form.merge(ridge, on=["game_id", "team"], how="left")
 
     extra = {}
+    qb_games = load_qb_games(conn, league)
     if league == "nfl":
         nfl = load_nflverse(conn)
         form = form.merge(qb_changed(games, nfl), on=["game_id", "team"], how="left")
-        qb_games = load_qb_games(conn, league)
-        if len(qb_games):
-            if ridge is not None:
-                qb_games = adjust_qb_games(qb_games, ridge)
-            form = form.merge(qb_ratings(games, nfl, qb_games), on=["game_id", "team"], how="left")
+        starters = nfl
         extra = nfl.drop(columns=["home_qb", "away_qb"])
+    else:
+        starters = previous_starters(games, qb_games) if len(qb_games) else None
+    if len(qb_games) and starters is not None:
+        rated_games = adjust_qb_games(qb_games, ridge) if ridge is not None else qb_games
+        form = form.merge(qb_ratings(games, starters, rated_games), on=["game_id", "team"], how="left")
 
     team_cols = [c for c in form.columns if c not in ("game_id", "team", "start_time")]
     df = games.copy()
@@ -333,7 +353,7 @@ def build(conn, league):
         derived["home_matchup_epa"] = df["home_ridge_off_epa"] + df["away_ridge_def_epa"]
         derived["away_matchup_epa"] = df["away_ridge_off_epa"] + df["home_ridge_def_epa"]
         derived["diff_matchup_epa"] = derived["home_matchup_epa"] - derived["away_matchup_epa"]
-        for stat in RIDGE_STATS:
+        for stat in [s for s in RIDGE_STATS if f"diff_ridge_off_{s}" in derived]:
             derived[f"diff_ridge_net_{stat}"] = derived[f"diff_ridge_off_{stat}"] - derived[f"diff_ridge_def_{stat}"]
     df = pd.concat([df, pd.DataFrame(derived)], axis=1)
 
