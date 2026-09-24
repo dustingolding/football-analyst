@@ -115,6 +115,59 @@ def load_team_stats(conn, league):
     return stats
 
 
+RIDGE_STATS = ["epa", "success"]  # fit as off_<stat> ~ offense[team] + defense[opponent]
+RIDGE_HALFLIFE_DAYS = 240        # tuned on 2008-2021; a game a year back counts about a third
+RIDGE_WINDOW_DAYS = 600
+RIDGE_LAMBDA = 8.0               # shrinkage toward average, in (weighted) games
+
+
+def ridge_ratings(long):
+    """Opponent-adjusted offense/defense ratings going into each game day (SRS-style).
+
+    Before each date, fits off_<stat> = mean + home + offense[team] + defense[opponent] by
+    weighted ridge regression on games completed before that date, solving for every
+    team's schedule strength at once. Returns one row per (game_id, team) with
+    ridge_off_<stat> / ridge_def_<stat> (def = what the defense adds to opponents' offense).
+    """
+    done = long[long["margin"].notna() & long["off_epa"].notna()]
+    teams = sorted(long["team"].unique())
+    index = {t: i for i, t in enumerate(teams)}
+    n = len(teams)
+
+    # One observation per team-game offense: that team's offense against the opponent's defense.
+    opp = done[["game_id", "team"]].merge(done[["game_id", "team"]], on="game_id", suffixes=("", "_opp"))
+    opp = opp[opp["team"] != opp["team_opp"]]
+    obs = done.merge(opp, on=["game_id", "team"])
+    obs_time = obs["start_time"].dt.tz_convert(None).to_numpy()  # naive UTC datetime64
+    X = np.zeros((len(obs), 2 + 2 * n))
+    X[:, 0] = 1.0
+    X[:, 1] = obs["is_home"].to_numpy() * 2 - 1  # +1 home, -1 away (neutral sites are rare in the NFL)
+    X[np.arange(len(obs)), 2 + obs["team"].map(index).to_numpy()] = 1.0
+    X[np.arange(len(obs)), 2 + n + obs["team_opp"].map(index).to_numpy()] = 1.0
+    Y = obs[[f"off_{s}" for s in RIDGE_STATS]].to_numpy()
+    penalty = np.full(2 + 2 * n, RIDGE_LAMBDA)
+    penalty[:2] = 1e-6  # don't shrink the intercept or home edge
+
+    out = []
+    days = long["start_time"].dt.tz_convert("America/New_York").dt.normalize()
+    for day, rows in long.groupby(days):
+        cutoff = day.tz_convert("UTC").tz_localize(None).to_datetime64()
+        age = (cutoff - obs_time) / np.timedelta64(1, "D")
+        use = (age > 0) & (age <= RIDGE_WINDOW_DAYS) & ~np.isnan(Y).any(axis=1)
+        if use.sum() < 100:
+            continue
+        w = 0.5 ** (age[use] / RIDGE_HALFLIFE_DAYS)
+        Xu = X[use]
+        beta = np.linalg.solve(Xu.T @ (Xu * w[:, None]) + np.diag(penalty), Xu.T @ (Y[use] * w[:, None]))
+        idx = rows["team"].map(index).to_numpy()
+        record = pd.DataFrame({"game_id": rows["game_id"].to_numpy(), "team": rows["team"].to_numpy()})
+        for k, stat in enumerate(RIDGE_STATS):
+            record[f"ridge_off_{stat}"] = beta[2 + idx, k]
+            record[f"ridge_def_{stat}"] = beta[2 + n + idx, k]
+        out.append(record)
+    return pd.concat(out, ignore_index=True)
+
+
 def form_features(long, extra_stats=()):
     """Per team-game features, computed only from games completed before kickoff."""
     done = long[long["margin"].notna()].copy().sort_values(["team", "start_time"], kind="stable")
@@ -174,6 +227,8 @@ def build(conn, league):
         long = long.merge(team_stats, on=["game_id", "team"], how="left")
         extra_stats = EFFICIENCY_STATS
     form = form_features(long, extra_stats)
+    if team_stats is not None:
+        form = form.merge(ridge_ratings(long), on=["game_id", "team"], how="left")
 
     extra = {}
     if league == "nfl":
@@ -192,9 +247,11 @@ def build(conn, league):
     df["elo_diff"] = df["home_elo"] - df["away_elo"]
     if extra_stats:
         # Offense against the defense it faces (def_epa is EPA allowed, so higher = worse defense).
-        df["home_matchup_epa"] = df["home_ewm_off_epa"] + df["away_ewm_def_epa"]
-        df["away_matchup_epa"] = df["away_ewm_off_epa"] + df["home_ewm_def_epa"]
+        df["home_matchup_epa"] = df["home_ridge_off_epa"] + df["away_ridge_def_epa"]
+        df["away_matchup_epa"] = df["away_ridge_off_epa"] + df["home_ridge_def_epa"]
         df["diff_matchup_epa"] = df["home_matchup_epa"] - df["away_matchup_epa"]
+        for stat in RIDGE_STATS:
+            df[f"diff_ridge_net_{stat}"] = df[f"diff_ridge_off_{stat}"] - df[f"diff_ridge_def_{stat}"]
 
     if len(extra):
         df = df.merge(extra, on="game_id", how="left")
@@ -204,7 +261,8 @@ def build(conn, league):
         "elo_prob", "elo_margin", "home_elo", "away_elo", "elo_diff",
         "season_type", "week", "neutral_site", "conference_game", "venue_indoor", "home_rank", "away_rank",
         *[f"{p}_{c}" for p in ("home", "away", "diff") for c in team_cols],
-        *[c for c in ("home_matchup_epa", "away_matchup_epa", "diff_matchup_epa") if c in df],
+        *[c for c in ("home_matchup_epa", "away_matchup_epa", "diff_matchup_epa",
+                      "diff_ridge_net_epa", "diff_ridge_net_success") if c in df],
         *[c for c in ("div_game", "dome", "temp", "wind") if c in df],
         "line_spread", "line_total", "line_open_spread", "line_home_prob",
     ]

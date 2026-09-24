@@ -3,6 +3,8 @@
 Two variants per league:
     xgb         no betting-line inputs: can the model find signal the market doesn't have?
     xgb_market  starts from the closing line and learns corrections to it (games with a line only)
+    linear      logistic/ridge regression on a few strong features; on NFL-sized data this
+                beats the full XGBoost feature set, which overfits
 
 Each variant has three models (home win probability, margin, total). They are trained on
 TRAIN seasons with early stopping on VALIDATION, and scored on the test seasons after it.
@@ -21,6 +23,10 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from psycopg.types.json import Jsonb
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from database import connect, init_db
 from espn_client import LEAGUES
@@ -36,6 +42,15 @@ BASE_PARAMS = {
     "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0, "early_stopping_rounds": 150,
     "n_jobs": -1, "random_state": 0,
 }
+# Compact inputs for the linear variant (missing ones, e.g. EPA for CFB, are skipped).
+LINEAR_FEATURES = {
+    "win": ["elo_margin", "diff_ewm_margin", "diff_ridge_net_epa", "diff_ridge_net_success",
+            "diff_qb_changed", "diff_rest_days", "neutral_site"],
+    "total": ["home_ewm_points_for", "away_ewm_points_for", "home_ewm_points_against",
+              "away_ewm_points_against", "dome", "wind", "temp"],
+}
+LINEAR_FEATURES["margin"] = LINEAR_FEATURES["win"]
+
 TARGETS = {
     # name: (estimator, objective/metric, target column)
     "win": (xgb.XGBClassifier, {"objective": "binary:logistic", "eval_metric": "logloss"}, "home_win"),
@@ -92,9 +107,15 @@ def fit(kind, X, y, base=None, X_val=None, y_val=None, base_val=None, n_estimato
 
 
 def predict(model, kind, X, base=None):
+    extra = {} if base is None else {"base_margin": base}
     if kind == "win":
-        return model.predict_proba(X, base_margin=base)[:, 1]
-    return model.predict(X, base_margin=base)
+        return model.predict_proba(X, **extra)[:, 1]
+    return model.predict(X, **extra)
+
+
+def linear_model(kind):
+    estimator = LogisticRegression(C=1.0, max_iter=1000) if kind == "win" else Ridge(alpha=1.0)
+    return make_pipeline(SimpleImputer(), StandardScaler(), estimator)
 
 
 def win_metrics(p, y):
@@ -199,6 +220,22 @@ def run_league(conn, league):
                 top = ", ".join(f"{c} {v:.2f}" for c, v in importance.head(8).items())
                 print(f"[{league}] {variant} margin model: {trees} trees, trained on {len(tr)} games; "
                       f"top features: {top}", flush=True)
+
+    # Linear variant: fixed hyperparameters, so no early stopping; same train seasons as XGBoost.
+    preds_val["linear"], preds_test["linear"], stored["linear"] = {}, {}, {}
+    for kind, (_, _, target) in TARGETS.items():
+        cols = [c for c in LINEAR_FEATURES[kind] if c in df and df[c].notna().any()]
+        tr = train[train[target].notna()]
+        model = linear_model(kind).fit(tr[cols], tr[target])
+        preds_val["linear"][kind] = pd.Series(predict(model, kind, val[cols]), index=val.index)
+        preds_test["linear"][kind] = pd.Series(predict(model, kind, test[cols]), index=test.index)
+        out = pd.Series(predict(model, kind, oos[cols]), index=oos.index)
+        everything = done[done[target].notna()]
+        final = linear_model(kind).fit(everything[cols], everything[target])
+        if len(upcoming):
+            out.loc[upcoming.index] = predict(final, kind, upcoming[cols])
+        stored["linear"][kind] = out
+        joblib.dump({"model": final, "features": cols}, MODEL_DIR / f"{league}_linear_{kind}.joblib")
     print(flush=True)
 
     report(league, f"validation {VALIDATION} (used for early stopping)", val, preds_val)
