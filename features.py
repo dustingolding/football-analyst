@@ -22,6 +22,9 @@ from espn_client import LEAGUES
 
 EWM_HALFLIFE = 6    # games; form carries across seasons and fades
 MAX_REST_DAYS = 21  # season openers and bye-week outliers are capped here
+# Efficiency stats from team_game_stats (nflverse play-by-play) averaged into form, when present.
+EFFICIENCY_STATS = ["off_epa", "def_epa", "off_success", "def_success", "off_pass_epa", "def_pass_epa",
+                    "off_rush_epa", "def_rush_epa", "off_cpoe"]
 
 
 def read_frame(conn, sql, params):
@@ -100,14 +103,27 @@ def team_games(games):
     return pd.concat(sides, ignore_index=True).sort_values(["start_time", "game_id"], kind="stable")
 
 
-def form_features(long):
+def load_team_stats(conn, league):
+    rows = conn.execute(
+        "SELECT game_id, team_id, stats FROM team_game_stats WHERE league = %s", (league,)
+    ).fetchall()
+    if not rows:
+        return None
+    stats = pd.DataFrame([r[2] for r in rows]).reindex(columns=EFFICIENCY_STATS).astype(float)
+    stats.insert(0, "game_id", [r[0] for r in rows])
+    stats.insert(1, "team", [r[1] for r in rows])
+    return stats
+
+
+def form_features(long, extra_stats=()):
     """Per team-game features, computed only from games completed before kickoff."""
     done = long[long["margin"].notna()].copy().sort_values(["team", "start_time"], kind="stable")
     by_team = done.groupby("team", sort=False)
 
     # Post-game running stats: value after each completed game, including it.
-    for col in ["margin", "points_for", "points_against", "vs_elo"]:
-        done[f"ewm_{col}"] = by_team[col].transform(lambda s: s.ewm(halflife=EWM_HALFLIFE).mean())
+    # ignore_na keeps a game with no efficiency data from diluting the average.
+    for col in ["margin", "points_for", "points_against", "vs_elo", *extra_stats]:
+        done[f"ewm_{col}"] = by_team[col].transform(lambda s: s.ewm(halflife=EWM_HALFLIFE, ignore_na=True).mean())
     done["last3_margin"] = by_team["margin"].transform(lambda s: s.rolling(3, min_periods=1).mean())
     by_season = done.groupby(["team", "season"], sort=False)
     done["season_games"] = by_season.cumcount() + 1
@@ -116,6 +132,7 @@ def form_features(long):
     done["last_season"] = done["season"]
 
     stat_cols = ["ewm_margin", "ewm_points_for", "ewm_points_against", "ewm_vs_elo", "last3_margin",
+                 *[f"ewm_{c}" for c in extra_stats],
                  "season_games", "season_win_pct", "season_margin", "last_season"]
     post = done[["team", "start_time", *stat_cols]].sort_values("start_time", kind="stable")
 
@@ -150,7 +167,13 @@ def qb_changed(games, nfl):
 
 def build(conn, league):
     games = load_games(conn, league)
-    form = form_features(team_games(games))
+    long = team_games(games)
+    team_stats = load_team_stats(conn, league)
+    extra_stats = []
+    if team_stats is not None:
+        long = long.merge(team_stats, on=["game_id", "team"], how="left")
+        extra_stats = EFFICIENCY_STATS
+    form = form_features(long, extra_stats)
 
     extra = {}
     if league == "nfl":
@@ -167,6 +190,11 @@ def build(conn, league):
     for col in team_cols:
         df[f"diff_{col}"] = df[f"home_{col}"] - df[f"away_{col}"]
     df["elo_diff"] = df["home_elo"] - df["away_elo"]
+    if extra_stats:
+        # Offense against the defense it faces (def_epa is EPA allowed, so higher = worse defense).
+        df["home_matchup_epa"] = df["home_ewm_off_epa"] + df["away_ewm_def_epa"]
+        df["away_matchup_epa"] = df["away_ewm_off_epa"] + df["home_ewm_def_epa"]
+        df["diff_matchup_epa"] = df["home_matchup_epa"] - df["away_matchup_epa"]
 
     if len(extra):
         df = df.merge(extra, on="game_id", how="left")
@@ -176,6 +204,7 @@ def build(conn, league):
         "elo_prob", "elo_margin", "home_elo", "away_elo", "elo_diff",
         "season_type", "week", "neutral_site", "conference_game", "venue_indoor", "home_rank", "away_rank",
         *[f"{p}_{c}" for p in ("home", "away", "diff") for c in team_cols],
+        *[c for c in ("home_matchup_epa", "away_matchup_epa", "diff_matchup_epa") if c in df],
         *[c for c in ("div_game", "dome", "temp", "wind") if c in df],
         "line_spread", "line_total", "line_open_spread", "line_home_prob",
     ]
