@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Secrets
+.env
+.env.*
+
+# Data and model artifacts
+data/
+*.parquet
+*.joblib
+mlruns/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,10 @@
+Flask
+gunicorn
+requests
+python-dotenv
+tzdata
+pandas
+numpy
+scikit-learn
+joblib
+xgboost
