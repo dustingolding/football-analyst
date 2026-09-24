@@ -38,6 +38,10 @@ def to_int(value):
         return None
 
 
+def is_real_team(team):
+    return str(team.get("id", "")).isdigit()
+
+
 def parse_time(value):
     return datetime.fromisoformat(value) if value else None
 
@@ -70,6 +74,9 @@ def parse_game(league, event):
     sides = {c.get("homeAway"): c for c in comp.get("competitors", [])}
     home, away = sides.get("home"), sides.get("away")
     if not home or not away:
+        return None
+    # Unscheduled playoff/bowl slots use placeholder "TBD" teams with ids -1 and -2.
+    if not (is_real_team(home["team"]) and is_real_team(away["team"])):
         return None
     if {home["team"].get("abbreviation"), away["team"].get("abbreviation")} & ALL_STAR_TEAMS:
         return None
@@ -161,7 +168,7 @@ def load_league(conn, league):
             for side in event["competitions"][0]["competitors"]:
                 team = side.get("team") or {}
                 seen = teams.get(team.get("id"))
-                if team.get("id") and (seen is None or start >= seen[0]):
+                if is_real_team(team) and (seen is None or start >= seen[0]):
                     teams[team["id"]] = (start, team_fields(team))
 
     # The teams endpoint has the current list (incl. teams with no stored games) and better logos.
@@ -171,6 +178,8 @@ def load_league(conn, league):
     ).fetchone()
     if row:
         for entry in row[0]["sports"][0]["leagues"][0]["teams"]:
+            if not is_real_team(entry["team"]):
+                continue
             fields = team_fields(entry["team"])
             _, existing = teams.get(entry["team"]["id"], (None, {}))
             merged = {**fields, **existing, **{k: v for k, v in fields.items() if v is not None}}
@@ -179,6 +188,10 @@ def load_league(conn, league):
     team_rows = [{"league": league, "team_id": team_id, **fields} for team_id, (_, fields) in teams.items()]
     upsert(conn, "teams", TEAM_COLUMNS, ["league", "team_id"], team_rows)
     upsert(conn, "games", GAME_COLUMNS, ["league", "game_id"], list(games.values()))
+
+    # The tables mirror raw_payloads, so drop rows the current parser no longer produces.
+    conn.execute("DELETE FROM games WHERE league = %s AND NOT (game_id = ANY(%s))", (league, list(games)))
+    conn.execute("DELETE FROM teams WHERE league = %s AND NOT (team_id = ANY(%s))", (league, list(teams)))
 
     completed = sum(g["completed"] for g in games.values())
     print(f"[{league}] {len(team_rows)} teams, {len(games)} games ({completed} completed), "

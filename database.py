@@ -78,6 +78,40 @@ CREATE TABLE IF NOT EXISTS games (
 CREATE INDEX IF NOT EXISTS games_season_idx ON games (league, season, season_type, week);
 CREATE INDEX IF NOT EXISTS games_home_team_idx ON games (league, home_team_id, start_time);
 CREATE INDEX IF NOT EXISTS games_away_team_idx ON games (league, away_team_id, start_time);
+
+-- Betting lines per game and source, keyed by ESPN game_id. Spreads use the betting
+-- convention from the home team's side: -3.5 means the home team is favored by 3.5.
+CREATE TABLE IF NOT EXISTS odds (
+    league               TEXT    NOT NULL,
+    game_id              TEXT    NOT NULL,   -- ESPN game_id
+    source               TEXT    NOT NULL,   -- nflverse, cfbd, espn
+    provider             TEXT    NOT NULL,   -- sportsbook, or 'consensus'
+    home_spread          NUMERIC,            -- closing
+    total                NUMERIC,            -- closing
+    home_moneyline       INTEGER,
+    away_moneyline       INTEGER,
+    home_spread_odds     INTEGER,
+    away_spread_odds     INTEGER,
+    over_odds            INTEGER,
+    under_odds           INTEGER,
+    opening_home_spread  NUMERIC,
+    opening_total        NUMERIC,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id, source, provider)
+);
+
+-- Pre-game predictions written by batch jobs (elo.py, ...); the web app only reads these.
+CREATE TABLE IF NOT EXISTS predictions (
+    league            TEXT        NOT NULL,
+    game_id           TEXT        NOT NULL,
+    model             TEXT        NOT NULL,   -- elo, xgb, ...
+    home_win_prob     DOUBLE PRECISION,
+    predicted_margin  DOUBLE PRECISION,       -- home minus away
+    predicted_total   DOUBLE PRECISION,
+    details           JSONB,                  -- model-specific (ratings, params)
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id, model)
+);
 """
 
 
