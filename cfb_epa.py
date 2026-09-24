@@ -36,6 +36,14 @@ MODEL_PATH = Path(__file__).parent / "models" / "cfb_ep.joblib"
 # Garbage time (cfbfastR's convention): score margin beyond these by quarter.
 GARBAGE_MARGIN = {1: 999, 2: 38, 3: 28, 4: 22}
 PASSER = re.compile(r"^(.+?) (?:pass|sacked|scrambles|incomplete)", re.IGNORECASE)
+# Scores are read from what the play says happened, not from the score fields: before ~2014
+# ESPN attaches score changes a play late and types touchdowns as plain "Rush"/"Pass".
+TOUCHDOWN = re.compile(r"\bTD\b|touchdown", re.IGNORECASE)
+FIELD_GOAL = re.compile(r"field goal (?:is )?good|\bFG\b.*\bgood\b", re.IGNORECASE)
+SAFETY = re.compile(r"\bsafety\b", re.IGNORECASE)
+# A touchdown on these was scored by the team that didn't start the play with the ball.
+DEFENSIVE_SCORE = re.compile(r"intercept|fumble|blocked|punt|kickoff|kick off|return", re.IGNORECASE)
+POINTS = {"TD": 7.0, "FG": 3.0, "SF": 2.0}
 
 
 def clock_seconds(value):
@@ -71,13 +79,16 @@ def load_plays(league="cfb"):
             rows.append((
                 game_id, season, i, home, away, start.get("team"), p.get("period"), clock_seconds(p.get("clock")),
                 start.get("down"), start.get("distance"), start.get("yardsToEndzone"),
-                p.get("type"), bool(p.get("isPenalty")), bool(p.get("scoringPlay")),
+                p.get("type"), bool(p.get("isPenalty")), (p.get("scoringType") or {}).get("abbreviation"),
                 home_score - prev_home, away_score - prev_away, prev_home, prev_away, p.get("text"),
             ))
             prev_home, prev_away = home_score, away_score
     cols = ["game_id", "season", "seq", "home", "away", "offense", "period", "clock", "down", "distance",
-            "yards_to_goal", "type", "penalty", "scoring", "home_pts", "away_pts", "home_before", "away_before", "text"]
+            "yards_to_goal", "type", "penalty", "scoring_type", "home_pts", "away_pts", "home_before", "away_before", "text"]
     plays = pd.DataFrame(rows, columns=cols)
+    # Older games list goal-to-go distance as 0; the real distance is the yards to the goal line.
+    goal = plays["distance"].eq(0) & plays["down"].between(1, 4)
+    plays.loc[goal, "distance"] = plays.loc[goal, "yards_to_goal"]
     plays["half"] = np.where(plays["period"] <= 2, 1, np.where(plays["period"] <= 4, 2, 3))  # 3 = overtime
     plays["half_seconds"] = plays["clock"] + np.where(plays["period"].isin([1, 3]), 900, 0)
     plays["goal_to_go"] = (plays["distance"] >= plays["yards_to_goal"]).astype(float)
@@ -87,13 +98,34 @@ def load_plays(league="cfb"):
     return plays
 
 
+def score_kind(play_type, text, scoring_type):
+    """'TD', 'FG', 'SF' or None, from ESPN's scoring type, play type and play text."""
+    play_type = play_type if isinstance(play_type, str) else ""
+    main = (text if isinstance(text, str) else "").split("(")[0]  # "(X KICK)" etc. describe the PAT
+    if scoring_type in ("TD", "FG", "SF"):
+        return scoring_type
+    if "extra point" in play_type.lower() or "two point" in play_type.lower() or "conversion" in play_type.lower():
+        return None
+    if "touchdown" in play_type.lower() or TOUCHDOWN.search(main):
+        return "TD"
+    if play_type == "Field Goal Good" or FIELD_GOAL.search(main):
+        return "FG"
+    if play_type == "Safety" or SAFETY.search(main):
+        return "SF"
+    return None
+
+
 def score_events(plays):
-    """Points each play put on the board, from the offense's side (+ offense scored, - defense did)."""
-    offense_is_home = plays["offense"] == plays["home"]
-    scored = plays[["home_pts", "away_pts"]].clip(lower=0)
-    for_offense = np.where(offense_is_home, scored["home_pts"], scored["away_pts"])
-    for_defense = np.where(offense_is_home, scored["away_pts"], scored["home_pts"])
-    return pd.Series(for_offense - for_defense, index=plays.index), (scored.sum(axis=1) >= 2)
+    """Points each play put on the board, from the offense's side (+ offense scored, - defense did).
+
+    offense = the team listed as starting the play (the kicking team on punts and kickoffs).
+    """
+    kinds = [score_kind(t, x, st) for t, x, st in zip(plays["type"], plays["text"], plays["scoring_type"])]
+    kinds = pd.Series(kinds, index=plays.index)
+    points = kinds.map(POINTS).fillna(0.0)
+    text = plays["type"].fillna("") + " " + plays["text"].fillna("").str.split("(").str[0]
+    by_defense = (kinds == "SF") | ((kinds == "TD") & text.str.contains(DEFENSIVE_SCORE))
+    return points.where(~by_defense, -points), kinds.notna()
 
 
 def next_score_labels(plays):

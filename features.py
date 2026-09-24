@@ -119,12 +119,12 @@ def load_team_stats(conn, league):
 # Fit as off_<stat> ~ offense[team] + defense[opponent]. Beyond overall efficiency, the
 # supporting cast: pass protection (sack rate), receivers after the catch, and the run game.
 RIDGE_STATS = ["epa", "success", "pass_epa", "rush_epa", "sack_rate", "yac_epa", "rush_success"]
-RIDGE_HALFLIFE_DAYS = 240        # tuned on 2008-2021; a game a year back counts about a third
 RIDGE_WINDOW_DAYS = 600
-RIDGE_LAMBDA = 8.0               # shrinkage toward average, in (weighted) games
+# Per league, tuned on 2008-2021: (half-life in days, shrinkage toward average in weighted games).
+RIDGE_PARAMS = {"nfl": (240, 8.0), "cfb": (120, 3.0)}
 
 
-def ridge_ratings(long):
+def ridge_ratings(long, halflife=240, shrinkage=8.0):
     """Opponent-adjusted offense/defense ratings going into each game day (SRS-style).
 
     Before each date, fits off_<stat> = mean + home + offense[team] + defense[opponent] by
@@ -149,7 +149,7 @@ def ridge_ratings(long):
     X[np.arange(len(obs)), 2 + n + obs["team_opp"].map(index).to_numpy()] = 1.0
     stats = [s for s in RIDGE_STATS if done[f"off_{s}"].notna().any()]  # CFB has no YAC data, etc.
     Y = obs[[f"off_{s}" for s in stats]].to_numpy()
-    penalty = np.full(2 + 2 * n, RIDGE_LAMBDA)
+    penalty = np.full(2 + 2 * n, shrinkage)
     penalty[:2] = 1e-6  # don't shrink the intercept or home edge
 
     out = []
@@ -160,7 +160,7 @@ def ridge_ratings(long):
         use = (age > 0) & (age <= RIDGE_WINDOW_DAYS) & ~np.isnan(Y).any(axis=1)
         if use.sum() < 100:
             continue
-        w = 0.5 ** (age[use] / RIDGE_HALFLIFE_DAYS)
+        w = 0.5 ** (age[use] / halflife)
         Xu = X[use]
         # Every stat shares the design matrix, so one solve fits them all.
         beta = np.linalg.solve(Xu.T @ (Xu * w[:, None]) + np.diag(penalty), Xu.T @ (Y[use] * w[:, None]))
@@ -211,10 +211,13 @@ def form_features(long, extra_stats=()):
     return feats
 
 
-# Tuned on 2008-2021 (fit to the part of the margin Elo doesn't explain).
-QB_PRIOR_EPA = -0.15        # EPA/dropback assumed for a QB with no history (backup level)
-QB_PRIOR_DROPBACKS = 100    # shrinkage toward the prior, in (weighted) dropbacks
-QB_HALFLIFE_DAYS = 1460     # a QB's track record stays informative for years
+# Per league, tuned on 2008-2021 (fit to the part of the margin Elo doesn't explain):
+#   prior: EPA/dropback assumed for a QB with no history (backup level; in college an unknown
+#          QB is usually a freshman or an FCS starter, so it sits lower on CFB's scale)
+#   shrink: dropbacks of history before it outweighs the prior
+#   halflife: days; a QB's track record stays informative for years
+QB_PARAMS = {"nfl": {"prior": -0.15, "shrink": 100, "halflife": 1460},
+             "cfb": {"prior": -0.45, "shrink": 30, "halflife": 1460}}
 
 
 def load_qb_games(conn, league):
@@ -243,7 +246,7 @@ def adjust_qb_games(qb_games, ridge):
     return adjusted
 
 
-def qb_ratings(games, starters_by_game, qb_games, prior=QB_PRIOR_EPA, shrink=QB_PRIOR_DROPBACKS, halflife=QB_HALFLIFE_DAYS):
+def qb_ratings(games, starters_by_game, qb_games, prior=-0.15, shrink=100, halflife=1460):
     """Pre-game rating of each team's starting QB, from that QB's earlier games on any team.
 
     rating = (sum w*EPA + shrink*prior) / (sum w*dropbacks + shrink), w = 0.5^(days ago / halflife),
@@ -361,7 +364,7 @@ def build(conn, league):
         long = long.merge(team_stats, on=["game_id", "team"], how="left")
         extra_stats = EFFICIENCY_STATS
     form = form_features(long, extra_stats)
-    ridge = ridge_ratings(long) if team_stats is not None else None
+    ridge = ridge_ratings(long, *RIDGE_PARAMS[league]) if team_stats is not None else None
     if ridge is not None:
         form = form.merge(ridge, on=["game_id", "team"], how="left")
 
@@ -376,7 +379,8 @@ def build(conn, league):
         starters = previous_starters(games, qb_games) if len(qb_games) else None
     if len(qb_games) and starters is not None:
         rated_games = adjust_qb_games(qb_games, ridge) if ridge is not None else qb_games
-        form = form.merge(qb_ratings(games, starters, rated_games), on=["game_id", "team"], how="left")
+        form = form.merge(qb_ratings(games, starters, rated_games, **QB_PARAMS[league]),
+                          on=["game_id", "team"], how="left")
 
     context = preseason_context(conn, league, games)
     if context is not None:
