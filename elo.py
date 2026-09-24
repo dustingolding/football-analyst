@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 
 from psycopg.types.json import Jsonb
 
-from database import connect, init_db
+from database import closing_lines, connect, init_db
 from espn_client import LEAGUES
 
 MEAN_RATING = 1500
@@ -51,28 +51,11 @@ def load_games(conn, league):
 
 
 def load_lines(conn, league):
-    """Closing line per game: home_spread and de-vigged home win probability from moneylines."""
-    rows = conn.execute(
-        """
-        SELECT DISTINCT ON (game_id) game_id, home_spread, home_moneyline, away_moneyline
-        FROM odds
-        WHERE league = %s AND home_spread IS NOT NULL
-        ORDER BY game_id, (provider = 'consensus') DESC, provider
-        """,
-        (league,),
-    ).fetchall()
-    lines = {}
-    for game_id, spread, home_ml, away_ml in rows:
-        prob = None
-        if home_ml and away_ml:
-            home_implied, away_implied = implied_prob(home_ml), implied_prob(away_ml)
-            prob = home_implied / (home_implied + away_implied)
-        lines[game_id] = {"spread": float(spread), "prob": prob}
-    return lines
-
-
-def implied_prob(moneyline):
-    return -moneyline / (-moneyline + 100) if moneyline < 0 else 100 / (moneyline + 100)
+    """Closing line per game: home_spread and de-vigged home win probability (median across books)."""
+    return {
+        game_id: {"spread": line["spread"], "prob": line["home_prob"]}
+        for game_id, line in closing_lines(conn, league).items()
+    }
 
 
 def fbs_by_season(games):

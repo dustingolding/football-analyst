@@ -100,6 +100,20 @@ CREATE TABLE IF NOT EXISTS odds (
     PRIMARY KEY (league, game_id, source, provider)
 );
 
+-- One row per game of pre-game features (features.py); targets are NULL until the game is played.
+CREATE TABLE IF NOT EXISTS game_features (
+    league        TEXT        NOT NULL,
+    game_id       TEXT        NOT NULL,
+    season        INTEGER     NOT NULL,
+    start_time    TIMESTAMPTZ NOT NULL,
+    completed     BOOLEAN     NOT NULL,
+    margin        DOUBLE PRECISION,       -- home minus away
+    total_points  DOUBLE PRECISION,
+    features      JSONB       NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id)
+);
+
 -- Pre-game predictions written by batch jobs (elo.py, ...); the web app only reads these.
 CREATE TABLE IF NOT EXISTS predictions (
     league            TEXT        NOT NULL,
@@ -163,3 +177,38 @@ def get_raw_payload(conn, league, endpoint, params, source="espn"):
         (source, league, endpoint, Jsonb(normalize_params(params))),
     ).fetchone()
     return row[0] if row else None
+
+
+def closing_lines(conn, league):
+    """One consensus line per game: the median across sportsbooks of the closing spread, total,
+    opening spread, and de-vigged home win probability from the moneylines.
+
+    Returns {game_id: {"spread", "total", "open_spread", "home_prob"}} (values may be None).
+    """
+    home, away = IMPLIED_SQL.format(ml="home_moneyline"), IMPLIED_SQL.format(ml="away_moneyline")
+    rows = conn.execute(
+        f"""
+        WITH books AS (
+            SELECT game_id, home_spread, total, opening_home_spread,
+                   CASE WHEN home_moneyline IS NOT NULL AND away_moneyline IS NOT NULL
+                        THEN {home} / ({home} + {away}) END AS home_prob
+            FROM odds
+            WHERE league = %s AND home_spread IS NOT NULL
+        )
+        SELECT game_id,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY home_spread),
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY total),
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY opening_home_spread),
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY home_prob)
+        FROM books GROUP BY game_id
+        """,
+        (league,),
+    ).fetchall()
+    return {
+        game_id: {"spread": spread, "total": total, "open_spread": open_spread, "home_prob": prob}
+        for game_id, spread, total, open_spread, prob in rows
+    }
+
+
+# American odds -> implied probability (vig included), as a SQL expression.
+IMPLIED_SQL = "(CASE WHEN {ml} < 0 THEN -{ml}::float / (-{ml} + 100) ELSE 100.0 / ({ml} + 100) END)"
