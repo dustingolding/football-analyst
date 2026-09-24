@@ -27,7 +27,7 @@ PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_
 CACHE_DIR = Path(__file__).parent / "data" / "nflverse"
 SOURCE = "nflverse_pbp"
 COLUMNS = ["game_id", "posteam", "defteam", "pass", "rush", "epa", "success", "wp", "cpoe",
-           "qb_dropback", "qb_epa", "id", "name"]
+           "qb_dropback", "qb_epa", "id", "name", "sack", "complete_pass", "yac_epa"]
 WP_RANGE = (0.05, 0.95)
 # Play-by-play uses current abbreviations for relocated teams; games.csv keeps the old ones.
 CURRENT_ABBR = {"STL": "LA", "SD": "LAC", "OAK": "LV"}
@@ -58,6 +58,11 @@ def team_stats(plays):
             f"{prefix}_pass_epa": plays[plays["pass"] == 1].groupby(["game_id", group_col])["epa"].mean(),
             f"{prefix}_rush_epa": plays[plays["rush"] == 1].groupby(["game_id", group_col])["epa"].mean(),
             f"{prefix}_pass_rate": g["pass"].mean(),
+            # Supporting cast: pass protection, receivers after the catch, the run game.
+            f"{prefix}_sack_rate": plays[plays["qb_dropback"] == 1].groupby(["game_id", group_col])["sack"].mean(),
+            f"{prefix}_yac_epa": plays[plays["complete_pass"] == 1].groupby(["game_id", group_col])["yac_epa"].mean(),
+            f"{prefix}_pass_success": plays[plays["pass"] == 1].groupby(["game_id", group_col])["success"].mean(),
+            f"{prefix}_rush_success": plays[plays["rush"] == 1].groupby(["game_id", group_col])["success"].mean(),
         })
         return out.rename_axis(["game_id", "team"])
 

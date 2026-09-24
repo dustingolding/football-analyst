@@ -109,13 +109,16 @@ def load_team_stats(conn, league):
     ).fetchall()
     if not rows:
         return None
-    stats = pd.DataFrame([r[2] for r in rows]).reindex(columns=EFFICIENCY_STATS).astype(float)
+    columns = list(dict.fromkeys(EFFICIENCY_STATS + [f"off_{s}" for s in RIDGE_STATS]))
+    stats = pd.DataFrame([r[2] for r in rows]).reindex(columns=columns).astype(float)
     stats.insert(0, "game_id", [r[0] for r in rows])
     stats.insert(1, "team", [r[1] for r in rows])
     return stats
 
 
-RIDGE_STATS = ["epa", "success"]  # fit as off_<stat> ~ offense[team] + defense[opponent]
+# Fit as off_<stat> ~ offense[team] + defense[opponent]. Beyond overall efficiency, the
+# supporting cast: pass protection (sack rate), receivers after the catch, and the run game.
+RIDGE_STATS = ["epa", "success", "pass_epa", "rush_epa", "sack_rate", "yac_epa", "rush_success"]
 RIDGE_HALFLIFE_DAYS = 240        # tuned on 2008-2021; a game a year back counts about a third
 RIDGE_WINDOW_DAYS = 600
 RIDGE_LAMBDA = 8.0               # shrinkage toward average, in (weighted) games
@@ -158,6 +161,7 @@ def ridge_ratings(long):
             continue
         w = 0.5 ** (age[use] / RIDGE_HALFLIFE_DAYS)
         Xu = X[use]
+        # Every stat shares the design matrix, so one solve fits them all.
         beta = np.linalg.solve(Xu.T @ (Xu * w[:, None]) + np.diag(penalty), Xu.T @ (Y[use] * w[:, None]))
         idx = rows["team"].map(index).to_numpy()
         record = pd.DataFrame({"game_id": rows["game_id"].to_numpy(), "team": rows["team"].to_numpy()})
@@ -215,15 +219,27 @@ QB_HALFLIFE_DAYS = 1460     # a QB's track record stays informative for years
 def load_qb_games(conn, league):
     rows = conn.execute(
         """
-        SELECT p.player_id, g.start_time, (p.stats->>'dropbacks')::float, (p.stats->>'epa_sum')::float
+        SELECT p.player_id, p.game_id, p.team_id,
+               CASE WHEN p.team_id = g.home_team_id THEN g.away_team_id ELSE g.home_team_id END,
+               g.start_time, (p.stats->>'dropbacks')::float, (p.stats->>'epa_sum')::float
         FROM player_game_stats p JOIN games g USING (league, game_id)
         WHERE p.league = %s
         """,
         (league,),
     ).fetchall()
-    qb_games = pd.DataFrame(rows, columns=["qb", "start_time", "dropbacks", "epa_sum"])
+    qb_games = pd.DataFrame(rows, columns=["qb", "game_id", "team", "opponent", "start_time", "dropbacks", "epa_sum"])
     qb_games["start_time"] = pd.to_datetime(qb_games["start_time"], utc=True)
     return qb_games
+
+
+def adjust_qb_games(qb_games, ridge):
+    """Credit each QB game for the pass defense faced: subtract, per dropback, the opponent's
+    pre-game ridge pass-defense rating (EPA/play it adds to offenses; negative = good defense)."""
+    opp_def = ridge.set_index(["game_id", "team"])["ridge_def_pass_epa"]
+    faced = opp_def.reindex(pd.MultiIndex.from_frame(qb_games[["game_id", "opponent"]])).to_numpy()
+    adjusted = qb_games.copy()
+    adjusted["epa_sum"] = qb_games["epa_sum"] - qb_games["dropbacks"] * np.nan_to_num(faced)
+    return adjusted
 
 
 def qb_ratings(games, nfl, qb_games, prior=QB_PRIOR_EPA, shrink=QB_PRIOR_DROPBACKS, halflife=QB_HALFLIFE_DAYS):
@@ -289,8 +305,9 @@ def build(conn, league):
         long = long.merge(team_stats, on=["game_id", "team"], how="left")
         extra_stats = EFFICIENCY_STATS
     form = form_features(long, extra_stats)
-    if team_stats is not None:
-        form = form.merge(ridge_ratings(long), on=["game_id", "team"], how="left")
+    ridge = ridge_ratings(long) if team_stats is not None else None
+    if ridge is not None:
+        form = form.merge(ridge, on=["game_id", "team"], how="left")
 
     extra = {}
     if league == "nfl":
@@ -298,6 +315,8 @@ def build(conn, league):
         form = form.merge(qb_changed(games, nfl), on=["game_id", "team"], how="left")
         qb_games = load_qb_games(conn, league)
         if len(qb_games):
+            if ridge is not None:
+                qb_games = adjust_qb_games(qb_games, ridge)
             form = form.merge(qb_ratings(games, nfl, qb_games), on=["game_id", "team"], how="left")
         extra = nfl.drop(columns=["home_qb", "away_qb"])
 
@@ -307,16 +326,16 @@ def build(conn, league):
         side_form = form.rename(columns={c: f"{side}_{c}" for c in team_cols})
         side_form = side_form.rename(columns={"team": f"{side}_team_id"}).drop(columns="start_time")
         df = df.merge(side_form, on=["game_id", f"{side}_team_id"], how="left")
-    for col in team_cols:
-        df[f"diff_{col}"] = df[f"home_{col}"] - df[f"away_{col}"]
-    df["elo_diff"] = df["home_elo"] - df["away_elo"]
+    derived = {f"diff_{col}": df[f"home_{col}"] - df[f"away_{col}"] for col in team_cols}
+    derived["elo_diff"] = df["home_elo"] - df["away_elo"]
     if extra_stats:
         # Offense against the defense it faces (def_epa is EPA allowed, so higher = worse defense).
-        df["home_matchup_epa"] = df["home_ridge_off_epa"] + df["away_ridge_def_epa"]
-        df["away_matchup_epa"] = df["away_ridge_off_epa"] + df["home_ridge_def_epa"]
-        df["diff_matchup_epa"] = df["home_matchup_epa"] - df["away_matchup_epa"]
+        derived["home_matchup_epa"] = df["home_ridge_off_epa"] + df["away_ridge_def_epa"]
+        derived["away_matchup_epa"] = df["away_ridge_off_epa"] + df["home_ridge_def_epa"]
+        derived["diff_matchup_epa"] = derived["home_matchup_epa"] - derived["away_matchup_epa"]
         for stat in RIDGE_STATS:
-            df[f"diff_ridge_net_{stat}"] = df[f"diff_ridge_off_{stat}"] - df[f"diff_ridge_def_{stat}"]
+            derived[f"diff_ridge_net_{stat}"] = derived[f"diff_ridge_off_{stat}"] - derived[f"diff_ridge_def_{stat}"]
+    df = pd.concat([df, pd.DataFrame(derived)], axis=1)
 
     if len(extra):
         df = df.merge(extra, on="game_id", how="left")
@@ -326,8 +345,8 @@ def build(conn, league):
         "elo_prob", "elo_margin", "home_elo", "away_elo", "elo_diff",
         "season_type", "week", "neutral_site", "conference_game", "venue_indoor", "home_rank", "away_rank",
         *[f"{p}_{c}" for p in ("home", "away", "diff") for c in team_cols],
-        *[c for c in ("home_matchup_epa", "away_matchup_epa", "diff_matchup_epa",
-                      "diff_ridge_net_epa", "diff_ridge_net_success") if c in df],
+        *[c for c in ("home_matchup_epa", "away_matchup_epa", "diff_matchup_epa") if c in df],
+        *[f"diff_ridge_net_{stat}" for stat in RIDGE_STATS if f"diff_ridge_net_{stat}" in df],
         *[c for c in ("div_game", "dome", "temp", "wind") if c in df],
         "line_spread", "line_total", "line_open_spread", "line_home_prob",
     ]
