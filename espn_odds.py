@@ -1,7 +1,9 @@
 """Backfill betting lines from ESPN's core API into raw_payloads and the odds table.
 
-One request per game, so this is slow (~12k CFB games since 2012); it is resumable and
-skips games already stored, except upcoming and current-season games whose lines move.
+Upcoming games also get lines from the scoreboard responses backfill.py already stores
+(ESPN drops them from the scoreboard once a game is final). Per-game odds take one
+request per game, so this is slow (~12k CFB games since 2012); it is resumable and
+skips games whose odds were stored after kickoff (upcoming games are re-fetched as lines move).
 ESPN has lines from about 2012 on; earlier games return nothing and are not requested.
 
     python espn_odds.py                      # cfb, 2012 through the current season
@@ -34,14 +36,15 @@ def games_to_fetch(conn, league, start, end, refresh):
         """
         SELECT g.game_id FROM games g
         WHERE g.league = %(league)s AND g.season BETWEEN %(start)s AND %(end)s
-          AND (%(refresh)s OR g.season >= %(current)s OR NOT EXISTS (
+          -- A copy fetched after kickoff holds the closing line and never needs re-fetching.
+          AND (%(refresh)s OR NOT EXISTS (
               SELECT 1 FROM raw_payloads r
               WHERE r.source = %(source)s AND r.league = g.league AND r.endpoint = %(endpoint)s
-                AND r.params = jsonb_build_object('event', g.game_id)))
+                AND r.params = jsonb_build_object('event', g.game_id)
+                AND r.fetched_at > g.start_time))
         ORDER BY g.start_time
         """,
-        {"league": league, "start": start, "end": end, "refresh": refresh, "current": current_season(),
-         "source": SOURCE, "endpoint": ENDPOINT},
+        {"league": league, "start": start, "end": end, "refresh": refresh, "source": SOURCE, "endpoint": ENDPOINT},
     )]
 
 
@@ -75,7 +78,7 @@ def american(value):
 
 def number(value):
     try:
-        return float(str(value).replace("+", ""))
+        return float(str(value).replace("+", "").lstrip("ou"))  # totals come as "o56.5" / "u56.5"
     except (TypeError, ValueError):
         return None
 
@@ -88,6 +91,11 @@ def parse_item(league, game_id, item):
         return None
     home, away = item.get("homeTeamOdds") or {}, item.get("awayTeamOdds") or {}
     home_open = home.get("open") or {}
+
+    # Scoreboard odds nest prices as {market: {side: {"open"|"close": {...}}}} instead.
+    def board(market, side, when, field):
+        return (((item.get(market) or {}).get(side) or {}).get(when) or {}).get(field)
+
     return {
         "league": league,
         "game_id": game_id,
@@ -96,19 +104,35 @@ def parse_item(league, game_id, item):
         # ESPN's spread is already from the home side (negative = home favored).
         "home_spread": number(item.get("spread")),
         "total": number(item.get("overUnder")),
-        "home_moneyline": american(home.get("moneyLine")),
-        "away_moneyline": american(away.get("moneyLine")),
-        "home_spread_odds": american(home.get("spreadOdds")),
-        "away_spread_odds": american(away.get("spreadOdds")),
-        "over_odds": american(item.get("overOdds")),
-        "under_odds": american(item.get("underOdds")),
-        "opening_home_spread": number((home_open.get("pointSpread") or {}).get("american")),
-        "opening_total": number(((item.get("open") or {}).get("total") or {}).get("american")),
+        "home_moneyline": american(home.get("moneyLine") or board("moneyline", "home", "close", "odds")),
+        "away_moneyline": american(away.get("moneyLine") or board("moneyline", "away", "close", "odds")),
+        "home_spread_odds": american(home.get("spreadOdds") or board("pointSpread", "home", "close", "odds")),
+        "away_spread_odds": american(away.get("spreadOdds") or board("pointSpread", "away", "close", "odds")),
+        "over_odds": american(item.get("overOdds") or board("total", "over", "close", "odds")),
+        "under_odds": american(item.get("underOdds") or board("total", "under", "close", "odds")),
+        "opening_home_spread": number((home_open.get("pointSpread") or {}).get("american")
+                                      or board("pointSpread", "home", "open", "line")),
+        "opening_total": number(((item.get("open") or {}).get("total") or {}).get("american")
+                                or board("total", "over", "open", "line")),
     }
 
 
 def load_odds(conn, league):
     odds = {}
+    # Scoreboard responses (stored by backfill.py) carry lines only until a game is final, so
+    # they cover upcoming games cheaply; per-game odds below win when both have a sportsbook.
+    cur = conn.execute(
+        "SELECT payload->'events' FROM raw_payloads "
+        "WHERE source = %s AND league = %s AND endpoint = 'scoreboard' ORDER BY fetched_at, id",
+        (SOURCE, league),
+    )
+    for (events,) in cur:
+        for event in events or []:
+            for item in (event.get("competitions") or [{}])[0].get("odds") or []:
+                line = parse_item(league, event["id"], item)
+                if line:
+                    odds[(event["id"], line["provider"])] = line
+
     cur = conn.execute(
         "SELECT params->>'event', payload FROM raw_payloads "
         "WHERE source = %s AND league = %s AND endpoint = %s ORDER BY fetched_at, id",
