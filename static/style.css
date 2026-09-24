@@ -214,7 +214,8 @@ ul.plain li:last-child { border-bottom: 0; }
   .gc-proj { display: none; }
   .gc-foot, .gc-time { font-size: 11px; }
   .edge-grid { grid-template-columns: 1fr; }
-  .hero-stats { width: 100%; gap: 28px; }
+  .hero-stats { width: 100%; gap: 20px; flex-wrap: nowrap; }
+  .hero-stats div { flex: 1; min-width: 0; }
   .hero-stats strong { font-size: 20px; }
 }
 

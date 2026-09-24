@@ -7,7 +7,10 @@ train.py, ...) write everything this app shows.
     gunicorn app:app                   # production (see Dockerfile)
 """
 
+import functools
+import hashlib
 import math
+import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -18,6 +21,24 @@ import web_data
 from database import closing_lines, connect
 
 app = Flask(__name__)
+
+
+@app.url_defaults
+def static_cache_buster(endpoint, values):
+    """Add ?v=<content hash> to static URLs so browsers and Cloudflare, which cache static files
+    for hours, fetch a changed stylesheet right after a deploy instead of serving a stale copy."""
+    if endpoint == "static" and "filename" in values:
+        values.setdefault("v", _static_version(values["filename"]))
+
+
+@functools.cache
+def _static_version(filename):
+    path = os.path.join(app.static_folder, filename)
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:10]
+    except OSError:
+        return "0"
 
 EASTERN = ZoneInfo("America/New_York")
 LEAGUES = {"nfl": "NFL", "cfb": "College Football"}
