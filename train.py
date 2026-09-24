@@ -2,7 +2,7 @@
 
 Two variants per league:
     xgb         no betting-line inputs: can the model find signal the market doesn't have?
-    xgb_market  closing line as inputs too: the best-calibrated number for the site
+    xgb_market  starts from the closing line and learns corrections to it (games with a line only)
 
 Each variant has three models (home win probability, margin, total). They are trained on
 TRAIN seasons with early stopping on VALIDATION, and scored on the test seasons after it.
@@ -58,17 +58,43 @@ def load(conn, league):
     return df, list(feats.columns)
 
 
-def fit(kind, X, y, X_val, y_val, n_estimators=None):
+# xgb_market starts every prediction from the closing line (XGBoost's base_margin) and only
+# learns corrections to it, so it trains and predicts on games that have that line.
+MARKET_BASE = {
+    "win": ("line_home_prob", lambda p: np.log(p / (1 - p))),  # log-odds, the classifier's raw scale
+    "margin": ("line_spread", lambda spread: -spread),
+    "total": ("line_total", lambda total: total),
+}
+
+
+def base_margin(variant, kind, rows):
+    if variant != "xgb_market":
+        return None
+    column, transform = MARKET_BASE[kind]
+    return transform(rows[column].clip(0.001, 0.999) if kind == "win" else rows[column]).to_numpy()
+
+
+def usable(variant, kind, rows):
+    """Rows a variant can predict: market models need their line."""
+    return rows if variant != "xgb_market" else rows[rows[MARKET_BASE[kind][0]].notna()]
+
+
+def fit(kind, X, y, base=None, X_val=None, y_val=None, base_val=None, n_estimators=None):
     estimator, extra, _ = TARGETS[kind]
     params = {**BASE_PARAMS, **extra}
     if n_estimators is not None:  # refit with a fixed tree count, no early stopping
         params.update(n_estimators=n_estimators, early_stopping_rounds=None)
-        return estimator(**params).fit(X, y, verbose=False)
-    return estimator(**params).fit(X, y, eval_set=[(X_val, y_val)], verbose=False)
+        return estimator(**params).fit(X, y, base_margin=base, verbose=False)
+    return estimator(**params).fit(
+        X, y, base_margin=base, eval_set=[(X_val, y_val)],
+        base_margin_eval_set=None if base_val is None else [base_val], verbose=False,
+    )
 
 
-def predict(model, kind, X):
-    return model.predict_proba(X)[:, 1] if kind == "win" else model.predict(X)
+def predict(model, kind, X, base=None):
+    if kind == "win":
+        return model.predict_proba(X, base_margin=base)[:, 1]
+    return model.predict(X, base_margin=base)
 
 
 def win_metrics(p, y):
@@ -88,6 +114,9 @@ def report(league, name, df, preds):
 
     def row(label, p=None, margin=None, total=None, subset=None):
         idx = subset if subset is not None else played.index
+        for series in (p, margin, total):
+            if series is not None:
+                idx = idx.intersection(series.index[series.notna()])
         out = []
         if p is not None:
             d = decided.index.intersection(idx)
@@ -97,7 +126,7 @@ def report(league, name, df, preds):
             out.append(f"margin_mae={np.mean(np.abs(played.loc[idx, 'margin'] - margin.loc[idx])):.2f}")
         if total is not None:
             out.append(f"total_mae={np.mean(np.abs(played.loc[idx, 'total_points'] - total.loc[idx])):.2f}")
-        print(f"    {label:<22}{'  '.join(out)}")
+        print(f"    {label:<22}{'  '.join(out)}  (n={len(idx)})")
 
     row("elo", played["elo_prob"], played["elo_margin"])
     for variant, p in preds.items():
@@ -139,24 +168,37 @@ def run_league(conn, league):
     for variant, cols in variants.items():
         preds_val[variant], preds_test[variant], stored[variant] = {}, {}, {}
         for kind, (_, _, target) in TARGETS.items():
-            tr, va = train[train[target].notna()], val[val[target].notna()]
-            model = fit(kind, tr[cols], tr[target], va[cols], va[target])
+            def rows(frame, labeled=True):
+                frame = usable(variant, kind, frame)
+                return frame[frame[target].notna()] if labeled else frame
+
+            def run(model, frame):
+                return pd.Series(predict(model, kind, frame[cols], base_margin(variant, kind, frame)), index=frame.index)
+
+            tr, va = rows(train), rows(val)
+            model = fit(kind, tr[cols], tr[target], base_margin(variant, kind, tr),
+                        va[cols], va[target], base_margin(variant, kind, va))
             trees = model.best_iteration + 1
-            preds_val[variant][kind] = pd.Series(predict(model, kind, val[cols]), index=val.index)
-            preds_test[variant][kind] = pd.Series(predict(model, kind, test[cols]), index=test.index)
-            out = pd.Series(predict(model, kind, oos[cols]), index=oos.index)
+            preds_val[variant][kind] = run(model, rows(val, labeled=False)).reindex(val.index)
+            preds_test[variant][kind] = run(model, rows(test, labeled=False)).reindex(test.index)
+            out = run(model, rows(oos, labeled=False)).reindex(oos.index)
 
             # Refit on every completed game for upcoming games, with the tree count found above.
-            final = fit(kind, done[done[target].notna()][cols], done[done[target].notna()][target], None, None, trees)
-            if len(upcoming):
-                out.loc[upcoming.index] = predict(final, kind, upcoming[cols])
+            everything = rows(done)
+            final = fit(kind, everything[cols], everything[target], base_margin(variant, kind, everything),
+                        n_estimators=trees)
+            ahead = rows(upcoming, labeled=False)
+            if len(ahead):
+                out.loc[ahead.index] = run(final, ahead)
             stored[variant][kind] = out
-            joblib.dump({"model": final, "features": cols}, MODEL_DIR / f"{league}_{variant}_{kind}.joblib")
+            joblib.dump({"model": final, "features": cols, "market_base": variant == "xgb_market"},
+                        MODEL_DIR / f"{league}_{variant}_{kind}.joblib")
 
             if kind == "margin":
                 importance = pd.Series(model.feature_importances_, index=cols).sort_values(ascending=False)
                 top = ", ".join(f"{c} {v:.2f}" for c, v in importance.head(8).items())
-                print(f"[{league}] {variant} margin model: {trees} trees; top features: {top}", flush=True)
+                print(f"[{league}] {variant} margin model: {trees} trees, trained on {len(tr)} games; "
+                      f"top features: {top}", flush=True)
     print(flush=True)
 
     report(league, f"validation {VALIDATION} (used for early stopping)", val, preds_val)
@@ -168,8 +210,10 @@ def write_predictions(conn, league, oos, stored):
     rows = []
     for variant, preds in stored.items():
         for i, game_id in oos["game_id"].items():
-            rows.append((league, game_id, variant, float(preds["win"][i]), float(preds["margin"][i]),
-                         float(preds["total"][i]),
+            values = [None if pd.isna(preds[kind][i]) else float(preds[kind][i]) for kind in ("win", "margin", "total")]
+            if all(v is None for v in values):
+                continue
+            rows.append((league, game_id, variant, *values,
                          Jsonb({"out_of_sample": bool(oos.at[i, "completed"]), "train_end": TRAIN_END})))
     with conn.transaction(), conn.cursor() as cur:
         cur.execute("DELETE FROM predictions WHERE league = %s AND model = ANY(%s)", (league, list(stored)))
