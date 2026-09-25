@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
-from database import connect, init_db
+from database import TEAM_STORY_SQL, connect, init_db
 from push import Apns
 
 EVERY = 20
@@ -174,9 +174,9 @@ def run_pass(conn, apns, dry_run=False):
     return alerts
 
 
-NEWS = """
+NEWS = f"""
     SELECT a.id, a.league, a.kind, a.slug, a.headline, a.dek, a.game_id, a.published_at,
-           array_agg(at.team_id) FILTER (WHERE at.role = 'game' OR a.kind IN ('ratings', 'editorial')) AS alert_teams,
+           array_agg(at.team_id) FILTER (WHERE {TEAM_STORY_SQL}) AS alert_teams,
            array_agg(at.team_id) AS all_teams
     FROM articles a JOIN article_teams at ON at.article_id = a.id
     WHERE a.status = 'published' AND a.published_at > now() - %s
