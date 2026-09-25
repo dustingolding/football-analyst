@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip uninstall -y nvidia-nccl-cu12 nvidia-nccl-cu13 2>/dev/null; true
 
-COPY *.py ./
+COPY *.py newsroom_words.txt.gz ./
 
 # Same uid as the host user that owns data/ and models/.
 RUN useradd --create-home --uid 1000 pipeline

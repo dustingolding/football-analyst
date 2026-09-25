@@ -13,6 +13,7 @@ A draft that fails gets one rewrite with the problems listed; if it still fails 
     python newsroom.py --kind recap --game 401872948 --dry-run
 """
 import argparse
+import gzip
 import json
 import os
 import re
@@ -440,7 +441,7 @@ STYLE = """You are a sports writer for SidelineWire, a football analytics site. 
 Rules you must follow:
 - Use ONLY the facts provided. Do not add players, coaches, stats, injuries, history, quotes or storylines that are not in the facts.
 - Every number you write must appear in the facts exactly as given. Do not calculate new numbers (no differences, sums or averages). Write numbers as digits.
-- No quotes from anyone. No first person ("I", "we") except "our model".
+- No quotes from anyone. No first person ("I", "we") except "our model". No headings, bold text or lists.
 - Each fact line names the team or player it belongs to. Never attribute a number to a different team or player.
 - Set the tone from the "Type of game" and "Upset" lines: call a game close only if it was a one-score finish.
 - Refer to teams by the names given. Mention our model's numbers where they help the story.
@@ -525,6 +526,18 @@ SENTENCE_STARTERS = {
     "Currently", "Recently", "Historically", "Statistically", "Around", "Across", "Among", "Between", "During",
     "Within", "Toward", "Towards", "Unlike", "Like", "Following", "Including", "Rounding", "Closing", "Opening",
 }
+def _common_words():
+    """Lowercase English words (Debian wamerican), so ordinary capitalized words aren't mistaken for names."""
+    try:
+        with gzip.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "newsroom_words.txt.gz"), "rt") as f:
+            return {w.strip() for w in f}
+    except OSError:
+        return set()
+
+
+COMMON_WORDS = _common_words()
+STAT_STEMS = ("rush", "pass", "receiv", "total", "turnover", "sack", "third", "interception", "tackle", "carr", "catch")
+
 BANNED = re.compile(r"\bas an ai\b|\blanguage model\b|\bI (?:think|believe|cannot)\b|\bin conclusion\b|\[.*?\]|"
                     r"\{|\}|https?://", re.I)
 
@@ -588,6 +601,15 @@ def anchored_number_problems(text, facts):
             if n in {"1", "2", "3", "4"} or re.fullmatch(r"20\d\d", val) or before is None:
                 continue
             name = before[0]
+            pos = marks[i][0]
+            following = " ".join(sentence[pos + len(val):].split()[:3]).lower()
+            stem = next((st for st in STAT_STEMS if st in following), None)
+            if stem and not any(n in nums and stem in ln and any(re.search(r"(?<!\w)" + re.escape(ph) + r"(?!\w)", ln)
+                                                                 for ph in before[1] + (after[1] if after else []))
+                                for ln, nums in lines):
+                problems.append(f"{val} {following.split()[0] if following else ''} is not a {name.removeprefix('player:')} "
+                                f"'{stem}' figure in the facts (in: \"{sentence.strip()[:90]}\")")
+                continue
             if not supported(n, before) and not (after and supported(n, after)):
                 problems.append(f"{val} is not a {name.removeprefix('player:')} figure in the facts "
                                 f"(in: \"{sentence.strip()[:90]}\")")
@@ -617,22 +639,46 @@ def pair_problems(text, facts):
 
 
 VERIFY = """You are a strict fact-checker for a sports site. Compare the ARTICLE with the FACTS.
-List every statement in the article that the facts do not directly support or that contradicts them: wrong numbers,
-numbers credited to the wrong team or player, wrong quarter or order of events, the wrong kind of score (a field goal
-called a touchdown), and anything not in the facts at all (streaks, history, first/second win or loss claims,
-injuries, quotes). Ignore opinions, adjectives and style. Quote the article's words in each item.
-Return JSON: {"errors": ["..."]}, with an empty list if everything is supported."""
+Find statements that are FALSE or NOT IN THE FACTS: wrong numbers, numbers credited to the wrong team or player or
+the wrong stat (total yards called rushing yards), wrong quarter or order of events, the wrong kind of score, and claims
+the facts don't contain (streaks, history, first win, injuries, quotes). Do not list statements that are correct.
+Ignore opinions, adjectives and style.
+Return JSON: {"errors": [{"quote": "the exact sentence from the article", "problem": "what is wrong"}]}
+Use an empty list if everything is supported."""
+
+CONFIRM = """You check one claim from a sports article against the FACTS. Decide whether every factual detail in
+the CLAIM (numbers, teams, players, which stat, order of events) is supported by the FACTS. Opinions and adjectives
+don't matter. Return JSON: {"supported": true or false, "detail": "short reason"}"""
 
 
 def verify(article, facts):
-    """Second-pass LLM fact check; returns a list of problems."""
+    """Two-stage LLM fact check: list suspect sentences, then confirm each one separately (a 7B model's first
+    pass flags plenty of correct sentences). Returns the confirmed problems."""
     text = f"HEADLINE: {article['headline']}\nDEK: {article['dek']}\n\n{article['body']}"
+    sheet = facts_text(facts)
     out, _ = ask([{"role": "system", "content": VERIFY},
-                  {"role": "user", "content": facts_text(facts) + "\n\nARTICLE:\n" + text}], temperature=0)
+                  {"role": "user", "content": sheet + "\n\nARTICLE:\n" + text}], temperature=0)
     errors = (out or {}).get("errors") if isinstance(out, dict) else None
     if errors is None:
         return ["fact-check pass did not return a result"]
-    return [f"fact-check: {e}" for e in errors if isinstance(e, str) and e.strip()][:8]
+    confirmed = []
+    for e in errors[:8]:
+        quote = (e.get("quote") if isinstance(e, dict) else str(e)) or ""
+        problem = (e.get("problem") if isinstance(e, dict) else "") or ""
+        if not quote.strip() or re.search(r"\bcorrect\b", problem, re.I) and not re.search(r"incorrect|not correct", problem, re.I):
+            continue
+        res, _ = ask([{"role": "system", "content": CONFIRM},
+                      {"role": "user", "content": f"{sheet}\n\nCLAIM: {quote}"}], temperature=0)
+        if isinstance(res, dict) and res.get("supported") is False:
+            confirmed.append(f"fact-check: \"{quote[:140]}\" - {res.get('detail') or problem}")
+    return confirmed[:6]
+
+
+def normalize_body(body):
+    """Paragraphs separated by blank lines; drop markdown headings and bold-only header lines."""
+    lines = [ln.strip() for ln in body.strip().splitlines()]
+    lines = [ln for ln in lines if not re.fullmatch(r"#+ .*|\*\*[^*]+\*\*:?", ln)]
+    return "\n\n".join(ln for ln in lines if ln)
 
 
 def check(kind, article, facts):
@@ -641,7 +687,8 @@ def check(kind, article, facts):
     if not isinstance(article, dict) or not all(isinstance(article.get(k), str) and article[k].strip()
                                                 for k in ("headline", "dek", "body")):
         return ["response was not JSON with headline, dek and body"]
-    headline, dek, body = article["headline"].strip(), article["dek"].strip(), article["body"].strip()
+    article["body"] = normalize_body(article["body"])
+    headline, dek, body = article["headline"].strip(), article["dek"].strip(), article["body"]
     text = f"{headline}\n{dek}\n{body}"
     words = len(body.split())
     lo, hi = WORDS[kind]
@@ -669,7 +716,7 @@ def check(kind, article, facts):
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", f"{dek}\n{body}"):  # headlines are title case: numbers-checked only
         for m in NAME_WORD.finditer(sentence):
             w = m.group(0).rstrip(".").removesuffix("'s").removesuffix("’s")
-            if w in ALLOWED_WORDS or (m.start() < 3 and w in SENTENCE_STARTERS):
+            if w in ALLOWED_WORDS or (m.start() < 3 and w in SENTENCE_STARTERS) or w.lower() in COMMON_WORDS:
                 continue
             if not re.search(r"\b" + re.escape(w.lower()) + r"\b", ftext):
                 unknown.add(w)
