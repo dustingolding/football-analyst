@@ -12,6 +12,7 @@ editorials always wait for review.
     python newsroom.py                          # hourly: recaps, then previews, then (Tuesdays) editorials
     python newsroom.py --kind preview --league nfl --limit 2 --dry-run
     python newsroom.py --kind recap --game 401872948 --dry-run
+    python newsroom.py --watch                  # worker: rewrites articles queued from /admin
 """
 import argparse
 import gzip
@@ -1055,11 +1056,16 @@ def check(kind, article, facts):
     return problems
 
 
-def write(kind, facts, retries=3):
-    """Draft, check and (once) revise. Returns (article, problems, attempts)."""
+def write(kind, facts, retries=3, note=None):
+    """Draft, check and revise. `note` is an editor's instruction from /admin regenerate.
+    Returns (article, problems, attempts)."""
     lo, hi = WORDS[kind]
+    task = TASKS[kind].format(lo=lo, hi=hi)
+    if note:
+        task += ("\n\nEditor's note for this rewrite (follow it, but never add anything that isn't in the facts): "
+                 + note)
     messages = [{"role": "system", "content": STYLE},
-                {"role": "user", "content": TASKS[kind].format(lo=lo, hi=hi) + "\n\n" + facts_text(facts)}]
+                {"role": "user", "content": task + "\n\n" + facts_text(facts)}]
     article, problems = None, ["no draft"]
     for attempt in range(retries + 1):
         article, raw = ask(messages)
@@ -1127,18 +1133,21 @@ def due_previews(conn, league, limit, game_id=None):
         ORDER BY g.start_time LIMIT %s""", (league, limit))
 
 
-def run_game(conn, client, kind, g, dry_run, show_facts=False):
+def game_facts(conn, client, kind, g, save=True):
+    """Fresh fact sheet for a preview or recap (also stores the box score and, for recaps, the plays)."""
     summary = client.get("summary", params={"event": g["game_id"]})
-    if not dry_run:
+    if save:
         live.save_boxscore(conn, g["league"], g["game_id"], summary, bool(g["completed"]))
     if kind == "recap":
         plays = live.plays_from_summary(g["league"], g["game_id"], summary)
-        if plays and not dry_run:
+        if plays and save:
             live.save_plays(conn, plays)
-        wp = [{"home_win_prob": p[13]} for p in plays]
-        facts = recap_facts(conn, g, summary, wp)
-    else:
-        facts = preview_facts(conn, g, summary)
+        return recap_facts(conn, g, summary, [{"home_win_prob": p[13]} for p in plays])
+    return preview_facts(conn, g, summary)
+
+
+def run_game(conn, client, kind, g, dry_run, show_facts=False):
+    facts = game_facts(conn, client, kind, g, save=not dry_run)
     t = time.time()
     article, problems, attempts = write(kind, facts)
     label = f"{kind} {g['league']} {g['game_id']} {g['away_abbr']}@{g['home_abbr']}"
@@ -1170,6 +1179,59 @@ def run_editorial(conn, league, dry_run, force=False):
     print(f"[newsroom] editorial {league} {key}: {status} {slug} {problems or ''}", flush=True)
 
 
+def regenerate(conn, a):
+    """Rewrite one article requested from /admin; it goes back to review for approve/deny."""
+    t = time.time()
+    if a["kind"] in ("preview", "recap") and a["game_id"]:
+        g = game_rows(conn, "g.league = %s AND g.game_id = %s", (a["league"], a["game_id"]))[0]
+        facts = game_facts(conn, EspnClient(a["league"], max_attempts=2, timeout=(5, 30)), a["kind"], g)
+    else:  # ratings and columns keep the week's facts (and table) they were written from
+        facts = a["facts"]
+    article, problems, attempts = write(a["kind"], facts, note=a["regen_note"])
+    if not isinstance(article, dict) or not article.get("headline"):
+        conn.execute("UPDATE articles SET status = 'review', checks = %s, updated_at = now() WHERE id = %s",
+                     (json.dumps({"problems": ["regeneration failed: the writer returned nothing usable"] + problems,
+                                  "attempts": attempts}), a["id"]))
+        return
+    key = a["game_id"] or a["topic_key"]
+    slug = f"{slugify(article['headline'])}-{key}"
+    if rows(conn, "SELECT 1 FROM articles WHERE slug = %s AND id <> %s", (slug, a["id"])):
+        slug = f"{slug}-{a['id']}"
+    conn.execute(
+        """UPDATE articles SET headline = %s, dek = %s, body = %s, facts = %s, checks = %s, model = %s, slug = %s,
+                  status = 'review', published_at = NULL, updated_at = now(), regen_requested_at = NULL
+           WHERE id = %s AND status = 'regenerating'""",
+        (article["headline"][:200], article.get("dek"), article.get("body") or "", json.dumps(facts, default=str),
+         json.dumps({"problems": problems, "attempts": attempts, "regenerated": True, "note": a["regen_note"]}),
+         writer_model(), slug, a["id"]))
+    print(f"[newsroom] regenerated {a['league']} {a['kind']} #{a['id']} ({time.time() - t:.0f}s) "
+          f"{problems or 'checks passed'}", flush=True)
+
+
+def watch(poll=20):
+    """Newsroom worker: rewrite articles queued from /admin (status 'regenerating'), oldest request first."""
+    print(f"[newsroom] worker watching for regenerate requests every {poll}s ({PROVIDER})", flush=True)
+    while True:
+        try:
+            with connect() as conn:
+                init_db(conn)
+                while True:
+                    todo = rows(conn, "SELECT id, league, kind, game_id, topic_key, facts, regen_note FROM articles "
+                                      "WHERE status = 'regenerating' ORDER BY regen_requested_at NULLS FIRST LIMIT 1")
+                    if todo:
+                        try:
+                            regenerate(conn, todo[0])
+                        except (requests.RequestException, KeyError, ValueError, IndexError) as e:
+                            print(f"[newsroom] regenerate #{todo[0]['id']} failed: {e!r}", flush=True)
+                            conn.execute("UPDATE articles SET status = 'review', checks = %s WHERE id = %s",
+                                         (json.dumps({"problems": [f"regeneration failed: {e!r:.200}"]}), todo[0]["id"]))
+                        continue
+                    time.sleep(poll)
+        except Exception as e:  # noqa: BLE001 (keep the worker alive through database restarts)
+            print(f"[newsroom] worker error: {e!r}; retrying in 30s", flush=True)
+            time.sleep(30)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--kind", choices=["recap", "preview", "ratings", "editorial"], action="append")
@@ -1179,7 +1241,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print drafts; write nothing")
     ap.add_argument("--force", action="store_true", help="editorial: write even if this week's exists")
     ap.add_argument("--show-facts", action="store_true", help="dry run: print the fact sheet too")
+    ap.add_argument("--watch", action="store_true", help="run the worker that rewrites articles queued from /admin")
     args = ap.parse_args()
+    if args.watch:
+        watch()
+        return 0
     kinds = args.kind or ["recap", "preview", "ratings"]
     leagues = args.league or ["nfl", "cfb"]
     with connect() as conn:

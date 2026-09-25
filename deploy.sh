@@ -61,6 +61,7 @@ for manifest in namespace app ingress cronjobs live newsroom; do
 done
 kubectl -n "$NAMESPACE" rollout status deployment/web --timeout=120s
 kubectl -n "$NAMESPACE" rollout status deployment/live --timeout=120s
+kubectl -n "$NAMESPACE" rollout status deployment/newsroom-worker --timeout=120s
 
 echo "Pruning old ${ENV_NAME} images (keeping ${KEEP_IMAGES} of each)..."
 for name in web pipeline; do

@@ -492,3 +492,21 @@ figure.chart figcaption { margin-top: 6px; }
 .standings-grid > *, .poll-grid > *, .league-grid > *, .card-grid > *, .lead > *, .board-grid > *, .home-grid > *, .two-col > * { min-width: 0; }
 .section-head { flex-wrap: wrap; gap: 4px 12px; }
 @media (max-width: 420px) { .standings-grid .opt2 { display: none; } }
+
+/* Admin */
+.admin-login { max-width: 380px; margin: 40px auto; }
+.form-error { color: var(--miss); margin: 0; font-size: 14px; }
+.admin-table td { vertical-align: top; }
+.inline-actions { display: flex; gap: 6px; }
+.inline-actions button, .linkish { font: inherit; font-size: 13px; font-weight: 600; padding: 5px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+.inline-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.linkish { border: 0; background: none; color: var(--accent); padding: 0; }
+.flag { color: var(--miss); font-weight: 700; }
+.ok { color: var(--hit); font-weight: 700; }
+.ok-panel { border-left: 3px solid var(--hit); }
+.regen-note { border-left: 3px solid var(--accent); margin-bottom: 16px; }
+.regen-form { margin-top: 16px; }
+.danger-zone { margin-top: 16px; }
+.danger-zone .danger { font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--miss);
+  background: transparent; color: var(--miss); cursor: pointer; }

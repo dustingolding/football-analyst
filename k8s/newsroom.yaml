@@ -45,3 +45,36 @@ spec:
               resources:
                 requests: {cpu: 100m, memory: 256Mi}
                 limits: {memory: 1Gi}
+---
+# Newsroom worker: rewrites articles queued from /admin ("Regenerate") within ~20 s. Idle otherwise.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: newsroom-worker
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: newsroom-worker}
+  template:
+    metadata:
+      labels: {app: newsroom-worker}
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: worker
+          image: ${PIPELINE_IMAGE}
+          imagePullPolicy: Never
+          command: ["python", "newsroom.py", "--watch"]
+          envFrom:
+            - secretRef:
+                name: pipeline-env
+            - secretRef:
+                name: openai
+                optional: true
+          resources:
+            requests: {cpu: 20m, memory: 96Mi}
+            limits: {memory: 512Mi}

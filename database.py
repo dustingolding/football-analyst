@@ -379,10 +379,14 @@ CREATE TABLE IF NOT EXISTS articles (
     UNIQUE (league, kind, topic_key)
 );
 CREATE INDEX IF NOT EXISTS articles_list_idx ON articles (league, status, published_at DESC);
+-- /admin regenerate: the web app sets status = 'regenerating' (+ an optional note); the newsroom worker rewrites it.
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS regen_note TEXT;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS regen_requested_at TIMESTAMPTZ;
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
-        GRANT SELECT ON articles TO web_ro;
-        GRANT UPDATE (status, headline, dek, body, updated_at, published_at, reviewed_at) ON articles TO web_ro;
+        GRANT SELECT, DELETE ON articles TO web_ro;
+        GRANT UPDATE (status, headline, dek, body, updated_at, published_at, reviewed_at, regen_note,
+                      regen_requested_at) ON articles TO web_ro;
     END IF;
 END $$;
 

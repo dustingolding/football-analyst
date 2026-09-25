@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="admin-login">
+  <h1>Sign in</h1>
+  <form method="post" class="panel review-form">
+    <label>Password <input type="password" name="password" autocomplete="current-password" autofocus required></label>
+    {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
+    <div class="review-actions"><button class="primary">Sign in</button></div>
+  </form>
+</div>
+{% endblock %}
