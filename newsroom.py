@@ -6,7 +6,8 @@ Every article is fact-checked against its fact sheet before anything is publishe
   - every capitalized name must appear in the fact sheet (catches invented players, coaches, venues),
   - length and format limits, and no first-person or "as an AI" slips.
 A draft that fails gets one rewrite with the problems listed; if it still fails it goes to the review queue
-(/newsroom). Previews and recaps that pass publish automatically; editorials always wait for review.
+(/newsroom). With NEWSROOM_AUTOPUBLISH=1, previews and recaps that pass publish automatically;
+editorials always wait for review.
 
     python newsroom.py                          # hourly: recaps, then previews, then (Tuesdays) editorials
     python newsroom.py --kind preview --league nfl --limit 2 --dry-run
@@ -30,6 +31,8 @@ from espn_client import EspnClient
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama.ai.svc.cluster.local:11434")
 MODEL = os.getenv("NEWSROOM_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M"))
+# 1: previews/recaps that pass every check publish on their own; 0: everything waits in /newsroom for review.
+AUTOPUBLISH = os.getenv("NEWSROOM_AUTOPUBLISH", "0") == "1"
 LOCK_ID = 7352041  # separate from pipeline.py's lock: the newsroom can run alongside a refresh
 EASTERN = ZoneInfo("America/New_York")
 INDEPENDENT_MODEL = {"nfl": "linear", "cfb": "xgb"}
@@ -182,7 +185,8 @@ def team_lines(conn, g, side, summary, ranks, n_teams, kind):
         if results:
             out.append(f"{t} most recent results: " + "; ".join(results))
         out += [f"{t} {label}: {stats[k]}" for k, label in PREVIEW_STATS.items() if k in stats]
-        out += [f"{t} season {LEADER_LABELS[k]} leader: {v}" for k, v in (s.get("leaders") or {}).items()]
+        out += [f"{t} season {LEADER_LABELS[k]} leader (season totals, not per game): {v}"
+                for k, v in (s.get("leaders") or {}).items()]
         if s.get("injuries"):
             out.append(f"{t} players out or doubtful: " + ", ".join(s["injuries"]))
     else:
@@ -207,12 +211,18 @@ def prediction_lines(conn, g, recap=False):
                    + (f" ({fav} favored by {abs(sp):g})" if sp else ""))
     if line.get("total") is not None and not recap:
         out.append(f"Over/under: {line['total']:g}")
+    margin, total = ind.get("predicted_margin"), ind.get("predicted_total")
     if ind.get("home_win_prob") is not None:
         p = ind["home_win_prob"]
         fav, prob = (h, p) if p >= 0.5 else (a, 1 - p)
         info["model_fav"], info["model_prob"] = fav, prob
-        out.append(f"Our model{' before the game' if recap else ''}: {fav} {pct(prob)} to win")
-    margin, total = ind.get("predicted_margin"), ind.get("predicted_total")
+        if margin is not None and (margin > 0) != (p >= 0.5):
+            # the win and margin models disagree on the winner: say so rather than hand the writer a contradiction
+            info["model_fav"] = None
+            out.append(f"Our model{' before the game' if recap else ''}: a toss-up (its win-probability model gives "
+                       f"{fav} {pct(prob)}, while its score projection slightly favors {h if margin > 0 else a})")
+        else:
+            out.append(f"Our model{' before the game' if recap else ''}: {fav} {pct(prob)} to win")
     if margin is not None and total is not None:
         hs, as_ = round((total + margin) / 2), round((total - margin) / 2)
         out.append(f"Our projected score{' before the game' if recap else ''}: {h} {hs}, {a} {as_}")
@@ -536,7 +546,10 @@ def _common_words():
 
 
 COMMON_WORDS = _common_words()
-STAT_STEMS = ("rush", "pass", "receiv", "total", "turnover", "sack", "third", "interception", "tackle", "carr", "catch")
+# Stat words after a number -> what the supporting fact line must contain (ESPN abbreviates carries/catches).
+STAT_STEMS = {"rush": ("rush", "car"), "pass": ("pass",), "receiv": ("receiv", "rec"), "total": ("total",),
+              "turnover": ("turnover",), "sack": ("sack",), "third": ("third",), "interception": ("int",),
+              "tackle": ("tackle",), "carr": ("car",), "catch": ("rec", "catch"), "reception": ("rec",)}
 
 BANNED = re.compile(r"\bas an ai\b|\blanguage model\b|\bI (?:think|believe|cannot)\b|\bin conclusion\b|\[.*?\]|"
                     r"\{|\}|https?://", re.I)
@@ -603,8 +616,13 @@ def anchored_number_problems(text, facts):
             name = before[0]
             pos = marks[i][0]
             following = " ".join(sentence[pos + len(val):].split()[:3]).lower()
+            if re.match(r"(?:\w+\s+){0,2}(?:per game|a game|per contest|a contest|per outing)", following) and not any(
+                    n in nums and "per game" in ln for ln, nums in lines):
+                problems.append(f"{val} is not a per-game figure in the facts; season totals are not averages "
+                                f"(in: \"{sentence.strip()[:90]}\")")
+                continue
             stem = next((st for st in STAT_STEMS if st in following), None)
-            if stem and not any(n in nums and stem in ln and any(re.search(r"(?<!\w)" + re.escape(ph) + r"(?!\w)", ln)
+            if stem and not any(n in nums and any(k in ln for k in STAT_STEMS[stem]) and any(re.search(r"(?<!\w)" + re.escape(ph) + r"(?!\w)", ln)
                                                                  for ph in before[1] + (after[1] if after else []))
                                 for ln, nums in lines):
                 problems.append(f"{val} {following.split()[0] if following else ''} is not a {name.removeprefix('player:')} "
@@ -674,6 +692,16 @@ def verify(article, facts):
     return confirmed[:6]
 
 
+ORDINALS = {w: str(i) for i, w in enumerate(
+    "first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth "
+    "fifteenth sixteenth seventeenth eighteenth nineteenth twentieth".split(), start=1)}
+
+
+def ordinals_to_digits(text):
+    """'ranks seventh' -> 'ranks 7', so spelled-out ranks are checked like digits."""
+    return re.sub(r"\b(" + "|".join(ORDINALS) + r")\b", lambda m: ORDINALS[m.group(1).lower()], text, flags=re.I)
+
+
 def normalize_body(body):
     """Paragraphs separated by blank lines; drop markdown headings and bold-only header lines."""
     lines = [ln.strip() for ln in body.strip().splitlines()]
@@ -689,7 +717,7 @@ def check(kind, article, facts):
         return ["response was not JSON with headline, dek and body"]
     article["body"] = normalize_body(article["body"])
     headline, dek, body = article["headline"].strip(), article["dek"].strip(), article["body"]
-    text = f"{headline}\n{dek}\n{body}"
+    text = ordinals_to_digits(f"{headline}\n{dek}\n{body}")
     words = len(body.split())
     lo, hi = WORDS[kind]
     if not lo <= words <= hi:
@@ -732,7 +760,7 @@ def check(kind, article, facts):
     return problems
 
 
-def write(kind, facts, retries=2):
+def write(kind, facts, retries=3):
     """Draft, check and (once) revise. Returns (article, problems, attempts)."""
     lo, hi = WORDS[kind]
     messages = [{"role": "system", "content": STYLE},
@@ -818,7 +846,7 @@ def run_game(conn, client, kind, g, dry_run, show_facts=False):
         print(f"== {label} ({time.time() - t:.0f}s, {attempts} attempt(s)) problems={problems}")
         print(json.dumps(article, indent=1, ensure_ascii=False) if isinstance(article, dict) else article)
         return
-    status, slug = save(conn, g["league"], kind, g["game_id"], article, facts, problems, attempts, True,
+    status, slug = save(conn, g["league"], kind, g["game_id"], article, facts, problems, attempts, AUTOPUBLISH,
                         g["season"], g["week"])
     print(f"[newsroom] {label}: {status} {slug} ({time.time() - t:.0f}s, {attempts} attempt(s)) {problems or ''}",
           flush=True)

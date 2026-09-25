@@ -38,6 +38,7 @@ spec:
                     name: pipeline-env
               env:
                 - {name: NEWSROOM_LIMIT, value: "6"}
+                - {name: NEWSROOM_AUTOPUBLISH, value: "${NEWSROOM_AUTOPUBLISH}"}
               resources:
                 requests: {cpu: 100m, memory: 256Mi}
                 limits: {memory: 1Gi}
