@@ -22,7 +22,7 @@ spec:
         runAsGroup: 1000
       containers:
         - name: live
-          image: football-analyst-pipeline:20260925-000539
+          image: football-analyst-pipeline:20260925-001335
           imagePullPolicy: Never
           command: ["python", "-u", "live.py"]
           envFrom:

@@ -28,7 +28,30 @@
     return div.innerHTML;
   }
 
+  function applyTicker(el, g) {
+    el.dataset.state = g.state;
+    el.classList.remove("tk-pre", "tk-in", "tk-final");
+    el.classList.add("tk-" + g.state);
+    var status = el.querySelector(".js-status");
+    if (status) status.textContent = g.detail || (g.state === "final" ? "Final" : "");
+    var rows = el.querySelectorAll(".tk-row");
+    [["away", g.away, g.home], ["home", g.home, g.away]].forEach(function (s, i) {
+      var cell = el.querySelector(".js-" + s[0]);
+      if (cell && s[1] !== null) { cell.textContent = s[1]; cell.classList.remove("tk-record"); }
+      if (rows[i]) {
+        rows[i].classList.toggle("has-ball", g.state === "in" && rows[i].dataset.team === g.possession);
+        rows[i].classList.toggle("lost", g.state === "final" && s[1] !== null && s[1] < s[2]);
+      }
+    });
+    var situation = el.querySelector(".js-situation");
+    if (situation) {
+      situation.textContent = g.state === "in" ? (g.down_distance || "") : "";
+      situation.classList.toggle("red-zone", !!g.red_zone && g.state === "in");
+    }
+  }
+
   function apply(el, g) {
+    if (el.classList.contains("tk-game")) return applyTicker(el, g);
     el.dataset.state = g.state;
     var status = el.querySelector(".js-status");
     if (status) {

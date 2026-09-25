@@ -15,6 +15,42 @@
   <script src="{{ url_for('static', filename='live.js') }}" defer></script>
 </head>
 <body>
+  {% set ticker_blocks = ticker() %}
+  {% if ticker_blocks %}
+  <div class="ticker" aria-label="Scoreboard">
+    <div class="ticker-track">
+      {% for block in ticker_blocks %}
+        <a class="tk-league" href="{{ url_for('slate', league=block.league) }}">{{ block.label }}</a>
+        {% for g in block.games %}
+          <a class="tk-game tk-{{ g.ui_state }}" href="{{ url_for('game', league=block.league, game_id=g.game_id) }}"
+             data-live-game="{{ g.game_id }}" data-league="{{ block.league }}" data-state="{{ g.ui_state }}"
+             data-kickoff="{{ g.kickoff_ts }}" data-home-id="{{ g.home_team_id }}" data-away-id="{{ g.away_team_id }}">
+            <div class="tk-status">
+              <span class="js-status">{% if g.ui_state == 'in' %}{{ g.detail }}{% elif g.ui_state == 'final' %}{{ g.detail or 'Final' }}{% else %}{{ g.start_time|ticker_time }}{% endif %}</span>
+              {% if g.broadcast %}<span class="tk-net">{{ g.broadcast }}</span>{% endif %}
+            </div>
+            {% for side in ('away', 'home') %}
+              {% set has_ball = g.ui_state == 'in' and g.possession_team_id == g[side ~ '_team_id'] %}
+              {% set other = 'home' if side == 'away' else 'away' %}
+              {% set lost = g.ui_state == 'final' and g[side ~ '_score'] is not none and g[other ~ '_score'] is not none and g[side ~ '_score'] < g[other ~ '_score'] %}
+              <div class="tk-row {{ 'has-ball' if has_ball }} {{ 'lost' if lost }}" data-team="{{ g[side ~ '_team_id'] }}">
+                {% if g[side ~ '_logo'] %}<img src="{{ g[side ~ '_logo'] }}" alt="" loading="lazy">{% endif %}
+                <span class="tk-abbr">{% if g[side ~ '_rank'] %}<em>{{ g[side ~ '_rank'] }}</em>{% endif %}{{ g[side ~ '_abbr'] }}</span>
+                <span class="tk-ball" aria-hidden="true"></span>
+                {% if g.ui_state == 'pre' %}
+                  <span class="tk-score tk-record js-{{ side }}">{{ g[side ~ '_record'] or '' }}</span>
+                {% else %}
+                  <span class="tk-score js-{{ side }}">{{ g[side ~ '_score'] }}</span>
+                {% endif %}
+              </div>
+            {% endfor %}
+            <div class="tk-situation js-situation {{ 'red-zone' if g.red_zone }}">{{ g.down_distance if g.ui_state == 'in' and g.down_distance else '' }}</div>
+          </a>
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
   <header class="site-header">
     <div class="wrap header-row">
       <a class="brand" href="{{ url_for('home') }}" aria-label="SidelineWire home">

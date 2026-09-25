@@ -270,3 +270,30 @@ table.compact td, table.compact th, table.stats-table td { white-space: nowrap; 
 .wp-axis span { border-left: 1px solid var(--line); padding-left: 4px; }
 .wp-chart > .muted:last-child { grid-column: 1 / -1; }
 .wp-chart > .wp-axis { grid-column: 2; }
+
+/* Scoreboard ticker above the header */
+.ticker { background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.ticker-track { display: flex; align-items: stretch; min-height: 62px; width: max-content; }
+.tk-league { display: flex; align-items: center; padding: 0 14px; font-weight: 800; font-size: 13px; color: var(--text);
+  border-right: 1px solid var(--line); background: var(--bg); position: sticky; left: 0; z-index: 1; }
+.tk-league:hover { text-decoration: none; color: var(--accent); }
+.tk-game { display: grid; grid-template-rows: auto auto auto auto; align-content: center; gap: 1px; width: 168px;
+  padding: 6px 10px; border-right: 1px solid var(--line); color: var(--text); font-size: 12.5px; }
+.tk-game:hover { background: var(--accent-soft); text-decoration: none; }
+.tk-status { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.tk-in .tk-status .js-status { color: var(--miss); font-weight: 800; }
+.tk-final .tk-status .js-status { color: var(--text); font-weight: 800; }
+.tk-net { overflow: hidden; text-overflow: ellipsis; }
+.tk-row { display: grid; grid-template-columns: 18px 1fr 12px auto; align-items: center; gap: 5px; font-weight: 700; }
+.tk-row img { width: 18px; height: 18px; object-fit: contain; }
+.tk-abbr { white-space: nowrap; }
+.tk-abbr em { font-style: normal; font-size: 10px; color: var(--muted); margin-right: 3px; font-weight: 700; }
+.tk-score { text-align: right; font-variant-numeric: tabular-nums; font-weight: 800; }
+.tk-record { font-weight: 500; color: var(--muted); font-size: 11.5px; }
+.tk-ball { width: 9px; height: 6px; }
+.has-ball .tk-ball { background: #8b5a2b; border-radius: 50%; }
+.tk-final .tk-row.lost { color: var(--muted); }
+.tk-situation { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 13px; }
+.tk-situation.red-zone { color: var(--miss); font-weight: 700; }
+@media (prefers-color-scheme: dark) { .tk-row img { filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.55)); } }
+.tk-situation:empty { display: none; }

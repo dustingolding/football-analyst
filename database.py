@@ -199,6 +199,10 @@ CREATE TABLE IF NOT EXISTS live_games (
     PRIMARY KEY (league, game_id)
 );
 
+ALTER TABLE live_games ADD COLUMN IF NOT EXISTS broadcast TEXT;
+ALTER TABLE live_games ADD COLUMN IF NOT EXISTS home_record TEXT;
+ALTER TABLE live_games ADD COLUMN IF NOT EXISTS away_record TEXT;
+
 CREATE TABLE IF NOT EXISTS live_plays (
     league          TEXT    NOT NULL,
     game_id         TEXT    NOT NULL,

@@ -59,12 +59,15 @@ def scoreboard(client):
         if state == "post" and prob is None:
             winner_home = num(home.get("score")) is not None and num(home.get("score")) > num(away.get("score") or 0)
             prob = 1.0 if winner_home else 0.0
+        broadcast = next((n for b in comp.get("broadcasts") or [] for n in b.get("names") or []), None)
+        record = lambda side: next((r.get("summary") for r in side.get("records") or []), None)  # noqa: E731
         rows.append((
             client.league, event["id"], state, (status.get("type") or {}).get("shortDetail"),
             status.get("period"), status.get("displayClock"),
             num(home.get("score")) if state != "pre" else None, num(away.get("score")) if state != "pre" else None,
             sit.get("possession"), sit.get("downDistanceText"), sit.get("isRedZone"),
             sit.get("homeTimeouts"), sit.get("awayTimeouts"), prob, last.get("text"),
+            broadcast, record(home), record(away),
         ))
         kickoffs[event["id"]] = (state, parse_time(event.get("date")))
     return rows, kickoffs
@@ -76,8 +79,8 @@ def save_scores(conn, rows):
             """
             INSERT INTO live_games (league, game_id, state, detail, period, clock, home_score, away_score,
                                     possession_team_id, down_distance, red_zone, home_timeouts, away_timeouts,
-                                    home_win_prob, last_play, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                                    home_win_prob, last_play, broadcast, home_record, away_record, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (league, game_id) DO UPDATE SET
                 state = EXCLUDED.state, detail = EXCLUDED.detail, period = EXCLUDED.period,
                 clock = EXCLUDED.clock, home_score = EXCLUDED.home_score, away_score = EXCLUDED.away_score,
@@ -85,7 +88,9 @@ def save_scores(conn, rows):
                 red_zone = EXCLUDED.red_zone, home_timeouts = EXCLUDED.home_timeouts,
                 away_timeouts = EXCLUDED.away_timeouts,
                 home_win_prob = COALESCE(EXCLUDED.home_win_prob, live_games.home_win_prob),
-                last_play = COALESCE(EXCLUDED.last_play, live_games.last_play), updated_at = now()
+                last_play = COALESCE(EXCLUDED.last_play, live_games.last_play),
+                broadcast = COALESCE(EXCLUDED.broadcast, live_games.broadcast),
+                home_record = EXCLUDED.home_record, away_record = EXCLUDED.away_record, updated_at = now()
             """,
             rows,
         )

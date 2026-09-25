@@ -670,6 +670,59 @@ def models():
                            first_season=TEST_FIRST_SEASON)
 
 
+_ticker_cache = {"at": 0.0, "data": None}
+TICKER_LIMIT = {"nfl": 12, "cfb": 14}
+
+
+def ticker():
+    """Games for the scoreboard strip above the header, grouped by league: live first, then
+    upcoming (next few days), then today's finals. College: all live games (ranked first),
+    upcoming and final games with a ranked team."""
+    if _ticker_cache["data"] is not None and time.time() - _ticker_cache["at"] < 20:
+        return _ticker_cache["data"]
+    rows = query(
+        """
+        SELECT lg.league, lg.game_id, lg.state, lg.detail, lg.home_score, lg.away_score, lg.possession_team_id,
+               lg.down_distance, lg.red_zone, lg.broadcast, lg.home_record, lg.away_record, g.start_time,
+               g.home_team_id, g.away_team_id, g.home_rank, g.away_rank, g.neutral_site,
+               h.abbreviation AS home_abbr, h.logo AS home_logo, a.abbreviation AS away_abbr, a.logo AS away_logo
+        FROM live_games lg
+        JOIN games g ON g.league = lg.league AND g.game_id = lg.game_id
+        JOIN teams h ON h.league = g.league AND h.team_id = g.home_team_id
+        JOIN teams a ON a.league = g.league AND a.team_id = g.away_team_id
+        WHERE (lg.state = 'in')
+           OR (lg.state = 'pre' AND g.start_time BETWEEN now() - interval '1 hour' AND now() + interval '4 days')
+           OR (lg.state = 'post' AND g.start_time > now() - interval '20 hours')
+        """
+    )
+    order = {"in": 0, "pre": 1, "post": 2}
+    blocks = []
+    for league, label in (("nfl", "NFL"), ("cfb", "NCAAF")):
+        games = [r for r in rows if r["league"] == league]
+        ranked = lambda r: bool(r["home_rank"] or r["away_rank"])  # noqa: E731
+        if league == "cfb":  # every live game; upcoming and finals only with a ranked team
+            games = [r for r in games if r["state"] == "in" or ranked(r)]
+        games.sort(key=lambda r: (order[r["state"]], not ranked(r),
+                                  r["start_time"].timestamp() * (-1 if r["state"] == "post" else 1)))
+        for r in games:
+            r["kickoff_ts"] = int(r["start_time"].timestamp())
+            r["ui_state"] = {"in": "in", "pre": "pre", "post": "final"}[r["state"]]
+        if games:
+            blocks.append({"league": league, "label": label, "games": games[:TICKER_LIMIT[league]]})
+    # A league with games in progress leads, so live scores are visible without scrolling.
+    blocks.sort(key=lambda b: b["games"][0]["state"] != "in")
+    _ticker_cache.update(at=time.time(), data=blocks)
+    return blocks
+
+
+@app.template_filter("ticker_time")
+def ticker_time(value):
+    local = value.astimezone(EASTERN)
+    today = datetime.now(EASTERN).date()
+    clock = local.strftime("%-I:%M %p")
+    return clock if local.date() == today else f"{local.strftime('%a')} {clock}"
+
+
 @app.context_processor
 def inject_globals():
-    return {"leagues": LEAGUES, "now": datetime.now(EASTERN)}
+    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker}
