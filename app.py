@@ -125,7 +125,7 @@ def spread_text(game, spread):
 GAME_SQL = """
     SELECT g.game_id, g.season, g.season_type, g.week, g.start_time, g.status, g.completed,
            g.neutral_site, g.notes, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
-           g.home_rank, g.away_rank, g.venue_name, g.venue_city, g.venue_state,
+           g.home_rank, g.away_rank, g.venue_name, g.venue_city, g.venue_state, g.broadcast,
            h.abbreviation AS home_abbr, h.display_name AS home_name, h.short_name AS home_short,
            h.logo AS home_logo, h.color AS home_color,
            a.abbreviation AS away_abbr, a.display_name AS away_name, a.short_name AS away_short,

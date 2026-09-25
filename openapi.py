@@ -57,6 +57,7 @@ SCHEMAS = {
     "Game": obj({
         "id": S, "league": S, "season": I, "season_type": I, "week": NI,
         "start_time": nullable({"type": "string", "format": "date-time"}), "neutral_site": B, "notes": NS, "venue": NS,
+        "broadcast": {**NS, "description": "TV/streaming networks, e.g. \"ESPN, ABC\"; null until announced"},
         "status": obj({"state": {"type": "string", "enum": ["pre", "in", "final"]}, "detail": NS}),
         "home": ref("Side"), "away": ref("Side"),
         "line": obj({"home_spread": NN, "spread_text": NS, "total": NN, "home_win_prob": NN}),

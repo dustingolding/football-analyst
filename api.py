@@ -113,6 +113,8 @@ def game_summary(league, g):
         "id": g["game_id"], "league": league, "season": g["season"], "season_type": g["season_type"],
         "week": g["week"], "start_time": iso(g["start_time"]), "neutral_site": bool(g["neutral_site"]),
         "notes": g.get("notes"), "venue": g.get("venue_name"),
+        # The schedule's networks; the live feed's (current week only) fills in anything not in it yet.
+        "broadcast": g.get("broadcast") or (live or {}).get("broadcast"),
         "status": {"state": g["state"], "detail": g.get("status_text")},
         "home": {**team_ref(league, g["home_team_id"], rank=g.get("home_rank")), "score": g.get("show_home")},
         "away": {**team_ref(league, g["away_team_id"], rank=g.get("away_rank")), "score": g.get("show_away")},

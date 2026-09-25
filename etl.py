@@ -22,7 +22,7 @@ GAME_COLUMNS = [
     "game_type", "notes", "neutral_site", "conference_game",
     "home_team_id", "away_team_id", "home_conference_id", "away_conference_id",
     "home_score", "away_score", "home_rank", "away_rank", "home_linescores", "away_linescores",
-    "venue_id", "venue_name", "venue_city", "venue_state", "venue_indoor", "attendance",
+    "venue_id", "venue_name", "venue_city", "venue_state", "venue_indoor", "attendance", "broadcast",
 ]
 
 TEAM_COLUMNS = [
@@ -60,6 +60,15 @@ def team_fields(team):
         "conference_id": team.get("conferenceId"),
         "is_active": team.get("isActive"),
     }
+
+
+def broadcast_names(comp):
+    """The game's networks as listed by ESPN, e.g. "ESPN, ABC"; None if not announced. National
+    networks win; local and regional stations only show when nothing national is listed."""
+    groups = comp.get("broadcasts") or []
+    national = [g for g in groups if g.get("market") == "national"]
+    names = list(dict.fromkeys(n for g in national or groups for n in g.get("names") or [] if n))
+    return ", ".join(names[:3]) or None
 
 
 def parse_game(league, event):
@@ -126,6 +135,7 @@ def parse_game(league, event):
         "venue_state": address.get("state"),
         "venue_indoor": venue.get("indoor"),
         "attendance": to_int(comp.get("attendance")) or None,
+        "broadcast": broadcast_names(comp),
     }
 
 
