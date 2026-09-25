@@ -8,7 +8,7 @@
   </div>
   <nav class="pill-nav">
     <a href="{{ url_for('newsroom_web.articles_page', league=league) }}" class="{{ 'active' if not kind }}">All</a>
-    {% for k, label in kinds.items() %}<a href="{{ url_for('newsroom_web.articles_page', league=league, kind=k) }}" class="{{ 'active' if kind == k }}">{{ label }}s</a>{% endfor %}
+    {% for k, label in kinds.items() %}<a href="{{ url_for('newsroom_web.articles_page', league=league, kind=k) }}" class="{{ 'active' if kind == k }}">{{ label }}</a>{% endfor %}
   </nav>
 </div>
 {% if articles %}

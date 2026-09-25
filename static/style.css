@@ -432,3 +432,16 @@ figure.chart figcaption { margin-top: 6px; }
 @media (max-width: 860px) { .box-grid { grid-template-columns: 1fr; } }
 .box-table td:first-child, .box-table th:first-child { position: sticky; left: 0; background: var(--panel); z-index: 1; }
 .box-table tbody tr:hover td:first-child { background: var(--accent-soft); }
+
+/* Weekly power ratings article */
+.ratings-report { max-width: 980px; margin: 8px auto 0; }
+.ratings-table th, .ratings-table td { text-align: right; padding: 7px 9px; font-variant-numeric: tabular-nums; }
+.ratings-table th:nth-child(3), .ratings-table td:nth-child(3), .ratings-table th:nth-child(4), .ratings-table td:nth-child(4) { text-align: left; }
+.ratings-table .team-cell { position: sticky; left: 0; background: var(--panel); z-index: 1; }
+.ratings-table tbody tr:hover .team-cell { background: var(--accent-soft); }
+.ratings-table .team-cell img { width: 20px; height: 20px; object-fit: contain; vertical-align: -5px; margin-right: 6px; }
+.ratings-table .move { font-size: 12px; font-weight: 700; }
+@media (max-width: 640px) {
+  .ratings-table th:nth-child(4), .ratings-table td:nth-child(4) { display: none; }
+  .ratings-table th, .ratings-table td { padding: 7px 6px; }
+}

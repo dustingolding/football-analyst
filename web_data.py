@@ -717,7 +717,8 @@ def game_availability(league, g):
 
 # --- Newsroom articles (newsroom.py writes; /newsroom reviews) --------------------------------------------------
 
-KIND_LABELS = {"preview": "Preview", "recap": "Recap", "editorial": "Column"}
+KIND_LABELS = {"preview": "Preview", "recap": "Recap", "ratings": "Power Ratings", "editorial": "Column"}
+KIND_PLURALS = {"preview": "Previews", "recap": "Recaps", "ratings": "Power Ratings", "editorial": "Columns"}
 ARTICLE_COLS = ("id, league, kind, game_id, season, week, slug, headline, dek, status, model, created_at, "
                 "published_at, updated_at")
 

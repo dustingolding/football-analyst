@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -40,11 +41,12 @@ OPENAI_MODELS = {"writer": os.getenv("NEWSROOM_OPENAI_MODEL", "gpt-5.5"),
 USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "fallbacks": 0}
 # 1: previews/recaps that pass every check publish on their own; 0: everything waits in /newsroom for review.
 AUTOPUBLISH = os.getenv("NEWSROOM_AUTOPUBLISH", "0") == "1"
+AUTOPUBLISH_RATINGS = AUTOPUBLISH and os.getenv("NEWSROOM_AUTOPUBLISH_RATINGS", "0") == "1"  # columns: review by default
 LOCK_ID = 7352041  # separate from pipeline.py's lock: the newsroom can run alongside a refresh
 EASTERN = ZoneInfo("America/New_York")
 INDEPENDENT_MODEL = {"nfl": "linear", "cfb": "xgb"}
 LEAGUE_NAMES = {"nfl": "NFL", "cfb": "college football"}
-WORDS = {"preview": (180, 480), "recap": (180, 480), "editorial": (300, 850)}
+WORDS = {"preview": (180, 480), "recap": (180, 480), "editorial": (300, 850), "ratings": (350, 800)}
 
 # ---------------------------------------------------------------------------------------------- facts
 
@@ -181,11 +183,11 @@ def team_lines(conn, g, side, summary, ranks, n_teams, kind):
     if c:
         out.append(f"{t} head coach: {c}")
     if r.get("elo"):
-        out.append(f"{t} rank in our Elo ratings: {r['elo']} of {n_teams}")
+        out.append(f"{t} SidelineWire power rating: No. {r['elo']} of {n_teams}")
     if r.get("off"):
-        out.append(f"{t} offense rank in our opponent-adjusted efficiency (EPA per play): {r['off']} of {n_teams}")
+        out.append(f"{t} offense efficiency: No. {r['off']} of {n_teams}")
     if r.get("def"):
-        out.append(f"{t} defense rank in our opponent-adjusted efficiency (EPA per play): {r['def']} of {n_teams}")
+        out.append(f"{t} defense efficiency: No. {r['def']} of {n_teams}")
     stats = s.get("team_stats") or {}
     if kind == "preview":
         results = recent_results(conn, g["league"], tid, g["season"], g["start_time"], n=6)
@@ -233,20 +235,20 @@ def prediction_lines(conn, g, recap=False):
         if margin is not None and (margin > 0) != (p >= 0.5):
             # the win and margin models disagree on the winner: say so rather than hand the writer a contradiction
             info["model_fav"] = None
-            out.append(f"Our model{' before the game' if recap else ''}: a toss-up (its win-probability model gives "
+            out.append(f"SidelineWire projection{' before the game' if recap else ''}: a toss-up (win probability gives "
                        f"{fav} {pct(prob)}, while its score projection slightly favors {h if margin > 0 else a})")
         else:
-            out.append(f"Our model{' before the game' if recap else ''}: {fav} {pct(prob)} to win")
+            out.append(f"SidelineWire projection{' before the game' if recap else ''}: {fav} {pct(prob)} to win")
     if margin is not None and total is not None:
         hs, as_ = round((total + margin) / 2), round((total - margin) / 2)
-        out.append(f"Our projected score{' before the game' if recap else ''}: {h} {hs}, {a} {as_}")
+        out.append(f"Projected score{' before the game' if recap else ''}: {h} {hs}, {a} {as_}")
         if line.get("spread") is not None and not recap:
             edge = margin + line["spread"]
             if abs(edge) >= 1.5:
-                out.append(f"Our model vs Vegas: our model likes {h if edge > 0 else a} more than Vegas does, by "
+                out.append(f"Projection vs Vegas: SidelineWire likes {h if edge > 0 else a} more than Vegas does, by "
                            f"{abs(edge):.1f} points")
             else:
-                out.append("Our model vs Vegas: our model agrees closely with the betting line")
+                out.append("Projection vs Vegas: SidelineWire's projection agrees closely with the betting line")
     return out, info
 
 
@@ -363,8 +365,8 @@ def recap_facts(conn, g, summary, plays):
     upset_by = [x for x in ("vegas_fav", "model_fav") if info.get(x) == lose]
     if upset_by:
         game.append(f"Upset: yes, {win} won as the underdog"
-                    + (" (Vegas and our model both favored " + lose + ")" if len(upset_by) == 2 else
-                       " (Vegas favored " + lose + ")" if upset_by == ["vegas_fav"] else " (our model favored " + lose + ")"))
+                    + (" (Vegas and SidelineWire's projection both favored " + lose + ")" if len(upset_by) == 2 else
+                       " (Vegas favored " + lose + ")" if upset_by == ["vegas_fav"] else " (SidelineWire's projection favored " + lose + ")"))
     else:
         game.append(f"Upset: no, {win} was the favorite" if info.get("vegas_fav") == win else "Upset: no")
     sp = summary.get("scoringPlays") or []
@@ -465,16 +467,228 @@ def editorial_facts(conn, league):
     }
 
 
+# ---------------------------------------------------------------------------------------------- power ratings
+
+
+def last_finished_week(conn, league, season):
+    """Latest regular-season week whose games are all final (unfinished games older than 2 days don't count)."""
+    open_weeks = {r["week"] for r in rows(conn, "SELECT DISTINCT week FROM games WHERE league = %s AND season = %s "
+                                                "AND season_type = 2 AND NOT completed AND start_time > now() - interval '2 days'",
+                                          (league, season))}
+    done = [r["week"] for r in rows(conn, "SELECT DISTINCT week FROM games WHERE league = %s AND season = %s "
+                                          "AND season_type = 2 AND completed", (league, season))]
+    return max((w for w in done if w not in open_weeks), default=None)
+
+
+def ratings_table(conn, league):
+    """Every team (NFL, or FBS) ranked by power rating, with the columns of the weekly Power Ratings article.
+    Rating = points better or worse than an average team on a neutral field (Elo scaled by the Elo model's
+    points-per-Elo). Rank change is against the previous week's article when there is one."""
+    import web_data  # noqa: PLC0415 (only the ratings article needs the site's data helpers)
+    season = rows(conn, "SELECT max(season) AS s FROM games WHERE league = %s AND completed", (league,))[0]["s"]
+    week = last_finished_week(conn, league, season)
+    power = {t: r for t, r in web_data.power_ratings(league, season).items() if web_data.is_major(league, t, season)}
+    teams, aff, recs = web_data.teams(league), web_data.affiliations(league, season), web_data.records(league, season)
+    per_elo = rows(conn, "SELECT (details->>'margin_per_elo')::float AS m FROM predictions WHERE league = %s AND model = 'elo' "
+                         "ORDER BY created_at DESC LIMIT 1", (league,))[0]["m"]
+    mean = sum(r["elo"] for r in power.values()) / len(power)
+
+    def ranks(key, reverse=True):
+        order = sorted((t for t in power if power[t].get(key) is not None), key=lambda t: power[t][key], reverse=reverse)
+        return {t: i for i, t in enumerate(order, 1)}
+    elo_rank, off_rank, def_rank = ranks("elo"), ranks("off"), ranks("def", reverse=False)
+
+    games = rows(conn, """
+        SELECT g.game_id, g.completed, g.season_type, g.week, g.home_team_id, g.away_team_id,
+               (p.details->>'home_rating')::float AS hr, (p.details->>'away_rating')::float AS ar, p.home_win_prob
+        FROM games g JOIN predictions p ON p.league = g.league AND p.game_id = g.game_id AND p.model = 'elo'
+        WHERE g.league = %s AND g.season = %s ORDER BY g.start_time""", (league, season))
+    # strength of schedule so far: opponents' current ratings (non-major opponents at their pre-game rating)
+    opp, exp_w, left, before_week = {}, {}, {}, {}
+    for g in games:
+        for side, other in (("home", "away"), ("away", "home")):
+            t, o = g[f"{side}_team_id"], g[f"{other}_team_id"]
+            if t not in power:
+                continue
+            if g["completed"]:
+                o_elo = power[o]["elo"] if o in power else (g["ar"] if side == "home" else g["hr"])
+                opp.setdefault(t, []).append(o_elo)
+                if g["season_type"] == 2 and g["week"] == week:
+                    before_week.setdefault(t, g["hr"] if side == "home" else g["ar"])
+            elif g["season_type"] == 2 and g["home_win_prob"] is not None:
+                p = g["home_win_prob"] if side == "home" else 1 - g["home_win_prob"]
+                exp_w[t] = exp_w.get(t, 0) + p
+                left[t] = left.get(t, 0) + 1
+    sos = {t: sum(v) / len(v) for t, v in opp.items()}
+    sos_rank = {t: i for i, t in enumerate(sorted(sos, key=lambda t: -sos[t]), 1)}
+
+    prev = rows(conn, "SELECT facts->'_table' AS tbl FROM articles WHERE league = %s AND kind = 'ratings' AND season = %s "
+                      "AND week < %s ORDER BY week DESC LIMIT 1", (league, season, week or 0))
+    if prev and prev[0]["tbl"]:
+        prev_rank = {r["team_id"]: r["rank"] for r in prev[0]["tbl"]}
+    else:  # ratings going into last week's games (teams on a bye keep their current rating)
+        last = {t: before_week.get(t, power[t]["elo"]) for t in power}
+        prev_rank = {t: i for i, t in enumerate(sorted(last, key=lambda t: -last[t]), 1)}
+
+    out = []
+    for t in sorted(power, key=lambda t: elo_rank[t]):
+        rec = recs.get(t) or {}
+        w, l_ = rec.get("w", 0), rec.get("l", 0)
+        a_ = aff.get(t) or {}
+        group = (a_.get("division") or a_.get("conference")) if league == "nfl" else a_.get("conference")
+        pw = w + exp_w.get(t, 0)
+        pl = l_ + left.get(t, 0) - exp_w.get(t, 0)
+        info = teams.get(t) or {}
+        out.append({
+            "rank": elo_rank[t], "prev_rank": prev_rank.get(t), "team_id": t, "name": info.get("display_name"),
+            "short": info.get("short_name") or info.get("display_name"), "abbr": info.get("abbreviation"),
+            "logo": info.get("logo"), "group": group, "record": rec.get("overall") or f"{w}-{l_}",
+            "rating": round((power[t]["elo"] - mean) * per_elo, 1),
+            "off_rank": off_rank.get(t), "def_rank": def_rank.get(t), "sos_rank": sos_rank.get(t),
+            "proj": f"{round(pw)}-{round(pl)}" if left.get(t) else None,
+        })
+    return {"season": season, "week": week, "rows": out, "n": len(out)}
+
+
+def result_phrase(conn, league, team_id, season):
+    """The team's most recent result as prose: 'beat the Jaguars 20-13 at home', 'lost 41-34 at Mississippi State'."""
+    g = game_rows(conn, "g.league = %s AND g.season = %s AND g.completed AND %s IN (g.home_team_id, g.away_team_id) "
+                        "ORDER BY g.start_time DESC LIMIT 1", (league, season, team_id))
+    if not g:
+        return None
+    g = g[0]
+    home = g["home_team_id"] == team_id
+    us, them = (g["home_score"], g["away_score"]) if home else (g["away_score"], g["home_score"])
+    opp = g["away_short"] if home else g["home_short"]
+    where = "" if g["neutral_site"] else (" at home" if home else " on the road")
+    if us > them:
+        return f"beat {opp} {us}-{them}{where}"
+    if us < them:
+        return f"lost to {opp} {them}-{us}{where}"
+    return f"tied {opp} {us}-{them}{where}"
+
+
+def tier(rank, n):
+    """Plain-English tier for an efficiency rank."""
+    if rank is None:
+        return ""
+    if rank == 1:
+        return "the best"
+    for cut, word in ((5, "top five"), (10, "top 10"), (n // 4, "top quarter"), (n // 2, "top half"),
+                      (n - n // 4, "bottom half"), (n - 5, "bottom quarter")):
+        if rank <= cut:
+            return word
+    return "bottom five"
+
+
+def ratings_facts(conn, league, table):
+    """The column's fact sheet: the top of the table, movers with their last result, and what's next."""
+    n, rows_ = table["n"], table["rows"]
+    by_id = {r["team_id"]: r for r in rows_}
+    season, week = table["season"], table["week"]
+    top_n = 10 if league == "nfl" else 25
+
+    def change(r):
+        return (r["prev_rank"] - r["rank"]) if r["prev_rank"] else 0
+
+    def line(r):
+        mv = change(r)
+        move = f"up {mv} from No. {r['prev_rank']}" if mv > 0 else f"down {-mv} from No. {r['prev_rank']}" if mv < 0 else "no change"
+        return (f"No. {r['rank']} {r['name']} ({r['record']}): rating {r['rating']:+.1f} points vs an average team; "
+                f"offense No. {r['off_rank']} ({tier(r['off_rank'], n)}), defense No. {r['def_rank']} "
+                f"({tier(r['def_rank'], n)}); {move}")
+
+    def last_result(t):
+        return result_phrase(conn, league, t, season)
+
+    movers = sorted((r for r in rows_ if r["prev_rank"]), key=change)
+    risers = [r for r in movers[::-1] if change(r) > 0][:5]
+    fallers = [r for r in movers if change(r) < 0][:5]
+    mover_line = lambda r: f"{r['name']}: No. {r['prev_rank']} to No. {r['rank']}" + (  # noqa: E731
+        f"; last game: {last_result(r['team_id'])}" if last_result(r["team_id"]) else "")
+    facts = {
+        "report": [f"SidelineWire power ratings, {LEAGUE_NAMES[league]} {season}, after Week {week}",
+                   f"{n} teams rated; rating = points better or worse than an average team on a neutral field"],
+        f"top {top_n}": [line(r) for r in rows_[:top_n]],
+        "biggest risers this week": [mover_line(r) for r in risers],
+        "biggest fallers this week": [mover_line(r) for r in fallers],
+    }
+    if league == "cfb":
+        prev_top = {r["team_id"] for r in rows_ if r["prev_rank"] and r["prev_rank"] <= 25}
+        now_top = {r["team_id"] for r in rows_[:25]}
+        facts["new to the top 25"] = [f"{by_id[t]['name']} (No. {by_id[t]['rank']})" for t in now_top - prev_top]
+        facts["fell out of the top 25"] = [f"{by_id[t]['name']} (now No. {by_id[t]['rank']})" for t in prev_top - now_top]
+    unbeaten_low = [r for r in rows_ if r["record"].endswith("-0") and r["rank"] > top_n][:4]
+    if unbeaten_low:
+        facts["unbeaten but outside the top " + str(top_n)] = [f"{r['name']} ({r['record']}), No. {r['rank']}" for r in unbeaten_low]
+    losing_high = [r for r in rows_[:top_n] if int(r["record"].split("-")[1]) > int(r["record"].split("-")[0])]
+    if losing_high:
+        facts[f"losing record but inside the top {top_n}"] = [f"{r['name']} ({r['record']}), No. {r['rank']}" for r in losing_high]
+    tough = sorted((r for r in rows_ if r["sos_rank"]), key=lambda r: r["sos_rank"])[:3]
+    facts["toughest schedules so far"] = [f"{r['name']}: schedule strength No. {r['sos_rank']}, record {r['record']}" for r in tough]
+    nxt = rows(conn, """
+        SELECT g.home_team_id, g.away_team_id, p.home_win_prob FROM games g
+        JOIN predictions p ON p.league = g.league AND p.game_id = g.game_id AND p.model = 'elo'
+        WHERE g.league = %s AND g.season = %s AND NOT g.completed AND g.season_type = 2 AND g.week = %s""",
+                (league, season, (week or 0) + 1))
+    big = sorted((g for g in nxt if g["home_team_id"] in by_id and g["away_team_id"] in by_id),
+                 key=lambda g: by_id[g["home_team_id"]]["rank"] + by_id[g["away_team_id"]]["rank"])[:3]
+    facts["biggest games next week"] = [
+        f"No. {by_id[g['away_team_id']]['rank']} {by_id[g['away_team_id']]['name']} at No. {by_id[g['home_team_id']]['rank']} "
+        f"{by_id[g['home_team_id']]['name']}: SidelineWire projection "
+        + (f"{by_id[g['home_team_id']]['short']} {pct(g['home_win_prob'])}" if g["home_win_prob"] >= 0.5
+           else f"{by_id[g['away_team_id']]['short']} {pct(1 - g['home_win_prob'])}") for g in big]
+    facts = {k: v for k, v in facts.items() if v}
+    mentioned = {r["team_id"] for r in rows_[:top_n]} | {r["team_id"] for r in risers + fallers + tough + unbeaten_low}
+    names = {}
+    for t in mentioned:
+        r = by_id[t]
+        names[r["short"]] = [x for x in {r["name"], r["short"], r["abbr"], r["name"].rsplit(" ", 1)[-1]} if x]
+    # drop nicknames shared by two mentioned teams (Bulldogs, Tigers...), so a number can't be pinned on the wrong one
+    counts = {}
+    for al in names.values():
+        for x in al:
+            counts[x] = counts.get(x, 0) + 1
+    facts["_aliases"] = {k: [x for x in v if counts[x] == 1] for k, v in names.items()}
+    facts["_table"] = rows_
+    return facts
+
+
+def run_ratings(conn, league, dry_run, force=False):
+    table = ratings_table(conn, league)
+    key = f"ratings-{table['season']}-w{table['week']}"
+    if not force and rows(conn, "SELECT 1 FROM articles WHERE league = %s AND kind = 'ratings' AND topic_key = %s",
+                          (league, key)):
+        return
+    facts = ratings_facts(conn, league, table)
+    article, problems, attempts = write("ratings", facts)
+    if dry_run:
+        print(facts_text(facts))
+        print(f"== ratings {league} {key} problems={problems}")
+        print(json.dumps(article, indent=1, ensure_ascii=False) if isinstance(article, dict) else article)
+        return
+    if force:
+        conn.execute("DELETE FROM articles WHERE league = %s AND kind = 'ratings' AND topic_key = %s", (league, key))
+    status, slug = save(conn, league, "ratings", None, article, facts, problems, attempts, AUTOPUBLISH_RATINGS,
+                        table["season"], table["week"], key)
+    print(f"[newsroom] ratings {league} {key}: {status} {slug} {problems or ''}", flush=True)
+
+
 # ---------------------------------------------------------------------------------------------- writing
 
 STYLE = """You are a sports writer for SidelineWire, a football analytics site. Write in clear, lively AP style.
 Rules you must follow:
 - Use ONLY the facts provided. Do not add players, coaches, stats, injuries, history, quotes or storylines that are not in the facts.
 - Every number you write must appear in the facts exactly as given. Do not calculate new numbers (no differences, sums or averages). Write numbers as digits.
-- No quotes from anyone. No first person ("I", "we") except "our model". No headings, bold text or lists.
+- No quotes from anyone. No first person. No headings, bold text or lists.
 - Each fact line names the team or player it belongs to. Never attribute a number to a different team or player.
 - Set the tone from the "Type of game" and "Upset" lines: call a game close only if it was a one-score finish.
-- Refer to teams by the names given. Mention our model's numbers where they help the story.
+- Refer to teams by the names given (nicknames and school names both work).
+- Voice: a beat writer for a major sports site. Use natural football vernacular (ground game, pass rush,
+  signal-caller, red zone, took care of business, statement win, trap game) where it fits the facts.
+- SidelineWire's ratings and projections are context, not the subject. Mention them at most twice in a game
+  story, and vary how: "the SidelineWire projection", "the power ratings", "the numbers", "the efficiency
+  numbers". Never write "our model". Don't explain methodology or repeat terms like "EPA per play".
 - Write like a newspaper sportswriter, not a stat sheet: tell a story with a clear angle, vary sentence length,
   and choose the few details that matter. Don't walk through every scoring play or list every stat.
 - Put stats into prose: "194 yards on 29 carries", "18 of 25 for 256 yards", never "29 CAR" or "18/25, 256 YDS".
@@ -483,10 +697,17 @@ Return JSON: {"headline": "...", "dek": "one-sentence summary", "body": "the art
 
 TASKS = {
     "preview": "Write a game preview of {lo}-{hi} words: the matchup, what each team does well, key players, "
-               "injuries if listed, the betting line and what our model expects.",
+               "injuries if listed, the betting line and where the SidelineWire projection lands.",
     "recap": "Write a game recap of {lo}-{hi} words. Lead with the result and the story of the game, cover the "
              "turning points in order (any score you give must match the scoring plays), the key performers and the "
              "stats that decided it, and how it compared with the pre-game expectations.",
+    "ratings": "Write the column that introduces this week's power ratings, {lo}-{hi} words, like the lead-in to "
+               "a major site's weekly rankings: a headline with a clear angle, then who's on top and why, the biggest "
+               "risers and fallers and what they did, anything surprising (unbeaten teams ranked low, teams ranked "
+               "high despite their record), and what to watch next week. The full table runs below the column, so "
+               "don't walk through it team by team. Use a number only when it makes a point (usually one per team, "
+               "never the full rating/offense/defense line); describe units in words like 'a top-five defense' or "
+               "'an offense that ranks near the bottom'. Vary sentence openings.",
     "editorial": "Write a weekly column of {lo}-{hi} words on the state of the league according to our ratings: "
                  "who is on top and why, who moved, and which teams are beating or missing their preseason "
                  "projections. Give it a point of view, but stay within the facts.",
@@ -603,6 +824,7 @@ def _common_words():
 
 
 COMMON_WORDS = _common_words()
+BRAND_CAP = {"preview": 2, "recap": 2, "editorial": 4, "ratings": 4}
 # Stat words after a number -> what the supporting fact line must contain (ESPN abbreviates carries/catches).
 STAT_STEMS = {"rush": ("rush", "car"), "pass": ("pass",), "receiv": ("receiv", "rec"), "total": ("total",),
               "turnover": ("turnover",), "sack": ("sack",), "third": ("third",), "interception": ("int",),
@@ -790,6 +1012,13 @@ def check(kind, article, facts):
         problems.append("body needs at least 3 paragraphs separated by blank lines")
     if BANNED.search(text):
         problems.append(f"remove this phrase or markup: {BANNED.search(text).group(0)!r}")
+    brand = len(re.findall(r"\bour (?:model|ratings?|numbers|projections?|metrics)\b|\bSidelineWire\b|\bthe model\b", text, re.I))
+    cap = BRAND_CAP.get(kind, 2)
+    if brand > cap:
+        problems.append(f"mentions SidelineWire/the model/our ratings {brand} times; use at most {cap} and let the "
+                        "football carry the story")
+    if re.search(r"\bour model\b", text, re.I):
+        problems.append('don\'t write "our model"; say "the SidelineWire projection" or "the power ratings" (sparingly)')
     if '"' in body or "“" in body:
         problems.append("no quotations: the facts contain no quotes")
 
@@ -853,6 +1082,7 @@ def writer_model():
 
 
 def slugify(s):
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()  # "résumés" -> "resumes"
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:80]
 
 
@@ -942,7 +1172,7 @@ def run_editorial(conn, league, dry_run, force=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--kind", choices=["recap", "preview", "editorial"], action="append")
+    ap.add_argument("--kind", choices=["recap", "preview", "ratings", "editorial"], action="append")
     ap.add_argument("--league", choices=["nfl", "cfb"], action="append")
     ap.add_argument("--game")
     ap.add_argument("--limit", type=int, default=int(os.getenv("NEWSROOM_LIMIT", "8")), help="articles per kind and league")
@@ -950,7 +1180,7 @@ def main():
     ap.add_argument("--force", action="store_true", help="editorial: write even if this week's exists")
     ap.add_argument("--show-facts", action="store_true", help="dry run: print the fact sheet too")
     args = ap.parse_args()
-    kinds = args.kind or ["recap", "preview", "editorial"]
+    kinds = args.kind or ["recap", "preview", "ratings"]
     leagues = args.league or ["nfl", "cfb"]
     with connect() as conn:
         init_db(conn)
@@ -960,10 +1190,10 @@ def main():
         failures = 0
         for kind in kinds:
             for league in leagues:
-                if kind == "editorial":
+                if kind in ("editorial", "ratings"):
                     # Tuesdays (after the weekend's games) unless run explicitly
                     if args.kind or datetime.now(EASTERN).weekday() == 1:
-                        run_editorial(conn, league, args.dry_run, args.force)
+                        (run_ratings if kind == "ratings" else run_editorial)(conn, league, args.dry_run, args.force)
                     continue
                 client = EspnClient(league, max_attempts=2, timeout=(5, 30))
                 games = (due_recaps if kind == "recap" else due_previews)(conn, league, args.limit, args.game)

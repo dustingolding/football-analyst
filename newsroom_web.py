@@ -40,7 +40,7 @@ def articles_page(league):
     page = max(1, request.args.get("page", 1, type=int))
     rows = web_data.latest_articles(league, 31, kind, (page - 1) * 30)
     return render_template("articles.html", league=league, league_name=LEAGUES[league], articles=rows[:30],
-                           more=len(rows) > 30, page=page, kind=kind, kinds=web_data.KIND_LABELS)
+                           more=len(rows) > 30, page=page, kind=kind, kinds=web_data.KIND_PLURALS)
 
 
 @bp.route("/<league>/news/<slug>")

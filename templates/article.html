@@ -15,6 +15,59 @@
   {% if g %}<div class="article-game">{{ game_card(league, g) }}</div>{% endif %}
 
   <div class="article-body">{{ a.body|article_body }}</div>
+</article>
+
+{% set table = (a.facts or {}).get('_table') %}
+{% if a.kind == 'ratings' and table %}
+<section class="ratings-report">
+  <div class="section-head">
+    <h2>{{ 'All 32 teams' if league == 'nfl' else 'All ' ~ table|length ~ ' FBS teams' }}</h2>
+    {% set groups = table|map(attribute='group')|reject('none')|unique|sort %}
+    <label class="picker small">{{ 'Division' if league == 'nfl' else 'Conference' }}
+      <select data-ratings-filter><option value="">All</option>{% for gname in groups %}<option>{{ gname }}</option>{% endfor %}</select></label>
+  </div>
+  <div class="table-scroll ratings-table">
+    <table class="compact">
+      <thead><tr>
+        <th>Rk</th><th title="Change from last week">±</th><th>Team</th><th>{{ 'Div' if league == 'nfl' else 'Conf' }}</th><th>W-L</th>
+        <th title="Points better or worse than an average team on a neutral field">Rating</th>
+        <th title="Offensive efficiency rank">Off</th><th title="Defensive efficiency rank">Def</th>
+        <th title="Strength of schedule so far (1 = toughest)">SOS</th><th title="Projected final regular-season record">Proj.</th>
+      </tr></thead>
+      <tbody>
+      {% for r in table %}{% set mv = (r.prev_rank - r.rank) if r.prev_rank else 0 %}
+        <tr data-group="{{ r.group or '' }}">
+          <td><strong>{{ r.rank }}</strong></td>
+          <td class="nowrap">{% if mv > 0 %}<span class="move up">▲{{ mv }}</span>{% elif mv < 0 %}<span class="move down">▼{{ -mv }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
+          <td class="nowrap team-cell"><a class="team-link" href="{{ url_for('team_page', league=league, team_id=r.team_id) }}">{% if r.logo %}<img src="{{ r.logo }}" alt="" loading="lazy">{% endif %}{{ r.short }}</a></td>
+          <td class="muted nowrap">{{ r.group or '' }}</td>
+          <td>{{ r.record }}</td>
+          <td><strong>{{ '%+.1f'|format(r.rating) }}</strong></td>
+          <td>{{ r.off_rank or '–' }}</td><td>{{ r.def_rank or '–' }}</td><td>{{ r.sos_rank or '–' }}</td>
+          <td class="nowrap">{{ r.proj or '–' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted small">Rating: points better or worse than an average {{ 'NFL' if league == 'nfl' else 'FBS' }} team on a neutral field.
+    Off/Def: opponent-adjusted efficiency ranks (EPA per play). SOS: strength of the schedule played so far (1 = toughest).
+    Proj.: projected final regular-season record from each remaining game's win probability.
+    <a href="{{ url_for('how_it_works') }}">How the ratings work</a>.</p>
+</section>
+<script>
+  (function () {
+    var sel = document.querySelector("[data-ratings-filter]");
+    if (!sel) return;
+    sel.addEventListener("change", function () {
+      document.querySelectorAll(".ratings-table tbody tr").forEach(function (tr) {
+        tr.hidden = sel.value && tr.dataset.group !== sel.value;
+      });
+    });
+  })();
+</script>
+{% endif %}
+<article class="explainer article">
 
   {% if wp %}
     <h2>How the win probability moved</h2>
@@ -22,10 +75,12 @@
   {% endif %}
 
   <aside class="ai-note">
-    <strong>How this story was made.</strong> This {{ a.kind_label|lower }} was written by an AI model running on our own
-    hardware, using only a fact sheet built from our game data{% if a.kind != 'editorial' %} and ESPN's box score{% endif %}.
-    Before publishing, every number and name in it was checked against that fact sheet{% if a.kind == 'editorial' %}, and
-    an editor reviewed it{% endif %}. Spot an error? It's on us. See <a href="{{ url_for('how_it_works') }}">how our models work</a>.
+    {% set by_openai = (a.model or '').startswith('gpt') %}
+    <strong>How this story was made.</strong> This {{ 'column' if a.kind == 'ratings' else a.kind_label|lower }} was written by an AI model
+    ({{ "OpenAI's " ~ a.model if by_openai else "running on our own hardware" }}), using only a fact sheet built from
+    {% if a.kind in ('recap', 'preview') %}our game data and ESPN's box score{% else %}our ratings and results{% endif %}.
+    Before publishing, every number and name in it was checked against that fact sheet{% if a.kind in ('editorial', 'ratings') %},
+    and an editor reviewed it{% endif %}. Spot an error? It's on us. See <a href="{{ url_for('how_it_works') }}">how our models work</a>.
   </aside>
 
   {% if g %}<p><a href="{{ url_for('game', league=league, game_id=g.game_id) }}">Full game page: box score, models, sportsbooks →</a></p>{% endif %}
