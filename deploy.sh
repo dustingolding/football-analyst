@@ -56,11 +56,12 @@ build "$PIPELINE_IMAGE" Dockerfile.pipeline
 echo "Deploying ${ENV_NAME} (${SITE_HOST}, namespace ${NAMESPACE})..."
 kubectl apply -f k8s/traefik-config.yaml >/dev/null
 VARS='$NAMESPACE $SITE_HOST $ENTRYPOINT $SITE_ENV $APP_DIR $WEB_IMAGE $PIPELINE_IMAGE $DAILY_SCHEDULE $WEEKLY_SCHEDULE $REFRESH_GAMEDAY_SCHEDULE $REFRESH_HOURLY_SCHEDULE $NEWSROOM_SCHEDULE $NEWSROOM_SUSPEND $NEWSROOM_AUTOPUBLISH'
-for manifest in namespace app ingress cronjobs live newsroom; do
+for manifest in namespace app ingress cronjobs live notify newsroom; do
     envsubst "$VARS" < "k8s/${manifest}.yaml" | kubectl apply -f -
 done
 kubectl -n "$NAMESPACE" rollout status deployment/web --timeout=120s
 kubectl -n "$NAMESPACE" rollout status deployment/live --timeout=120s
+kubectl -n "$NAMESPACE" rollout status deployment/notify --timeout=120s
 kubectl -n "$NAMESPACE" rollout status deployment/newsroom-worker --timeout=120s
 
 echo "Pruning old ${ENV_NAME} images (keeping ${KEEP_IMAGES} of each)..."
