@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Run a command on this host with an environment's secrets from Kubernetes instead of a .env file.
+#
+#   ./kenv dev  .venv/bin/python newsroom.py --kind recap --dry-run
+#   ./kenv prod .venv/bin/python api_keys.py create "iOS app"
+#
+# Exports every key of the namespace's pipeline-env and (if present) openai Secrets for that one command;
+# nothing is written to disk. Namespaces come from deploy/<env>.env.
+set -euo pipefail
+ENV_NAME="${1:-}"; shift || true
+if [[ "$ENV_NAME" != "dev" && "$ENV_NAME" != "prod" ]] || [[ $# -eq 0 ]]; then
+    echo "usage: $0 dev|prod <command> [args...]" >&2
+    exit 2
+fi
+cd "$(dirname "$0")"
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+NAMESPACE="$(. "deploy/${ENV_NAME}.env" && echo "$NAMESPACE")"
+exports=""
+for secret in pipeline-env openai; do
+    json="$(kubectl -n "$NAMESPACE" get secret "$secret" -o json 2>/dev/null)" || continue
+    exports+="$(python3 -c '
+import base64, json, shlex, sys
+for k, v in json.load(sys.stdin)["data"].items():
+    print(f"export {k}={shlex.quote(base64.b64decode(v).decode())}")' <<<"$json")"$'\n'
+done
+if [[ -z "$exports" ]]; then
+    echo "No secrets found in namespace ${NAMESPACE}." >&2
+    exit 1
+fi
+eval "$exports"
+exec "$@"

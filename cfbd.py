@@ -1,6 +1,6 @@
 """Load college football betting lines from CollegeFootballData.com into the odds table.
 
-Needs a free API key (https://collegefootballdata.com/key) in .env as CFBD_API_KEY.
+Needs a free API key (https://collegefootballdata.com/key) as CFBD_API_KEY (k8s Secret pipeline-env; on the host run via ./kenv).
 CFBD game ids are ESPN event ids, so lines join straight onto games.game_id. Each
 season/season type is one request (about 44 calls for 2005 onward; the free tier allows
 1,000 per month), and past seasons already stored are skipped unless --refresh is given.
@@ -32,7 +32,7 @@ ODDS_COLUMNS = [
 def fetch_lines(conn, start, end, refresh, pause):
     key = os.getenv("CFBD_API_KEY")
     if not key:
-        raise SystemExit("Set CFBD_API_KEY in .env (free key: https://collegefootballdata.com/key).")
+        raise SystemExit("Set CFBD_API_KEY (Secret pipeline-env; on the host: ./kenv dev|prod ...). Free key: https://collegefootballdata.com/key")
     session = requests.Session()
     session.headers["Authorization"] = f"Bearer {key}"
 

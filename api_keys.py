@@ -5,7 +5,7 @@
     python api_keys.py list
     python api_keys.py revoke <prefix>
 
-Uses the database in .env (dev: football; in ~/football-analyst-prod: football_prod), so create
+Uses DATABASE_URL (run as ./kenv dev ... for football, ./kenv prod ... for football_prod), so create
 keys separately for each environment.
 """
 
