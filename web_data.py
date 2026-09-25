@@ -743,7 +743,7 @@ def latest_articles(league=None, n=6, kind=None, offset=0):
 
 
 def article(slug=None, article_id=None, published_only=True):
-    rows = query(f"SELECT {ARTICLE_COLS}, body, facts, checks, reviewed_at FROM articles WHERE "
+    rows = query(f"SELECT {ARTICLE_COLS}, body, facts, checks, reviewed_at, regen_note FROM articles WHERE "
                  + ("slug = %s" if slug else "id = %s") + (" AND status = 'published'" if published_only else ""),
                  (slug or article_id,))
     return _label(rows)[0] if rows else None
@@ -757,9 +757,10 @@ def game_articles(league, game_id):
 
 
 def review_queue():
-    return {status: _label(query(f"SELECT {ARTICLE_COLS}, checks FROM articles WHERE status = %s "
-                                 "ORDER BY created_at DESC LIMIT %s", (status, 100 if status == "review" else 40)))
-            for status in ("review", "published", "rejected")}
+    return {status: _label(query(f"SELECT {ARTICLE_COLS}, checks, regen_note FROM articles WHERE status = %s "
+                                 "ORDER BY coalesce(published_at, updated_at) DESC LIMIT %s",
+                                 (status, 100 if status in ("review", "regenerating") else 40)))
+            for status in ("regenerating", "review", "published", "rejected")}
 
 
 def update_article(article_id, status=None, headline=None, dek=None, body=None):
@@ -837,3 +838,20 @@ def lead_stories(league=None, n=4):
             r["kind_label"] = KIND_LABELS.get(r["kind"], r["kind"].title())
         return sorted(rows, key=lambda r: -r["score"])[:n]
     return cached(("lead", league, n), build)
+
+
+def request_regeneration(article_id, note=""):
+    """Take the article off the site and queue it for the newsroom worker to rewrite (then it returns to review)."""
+    with connect() as conn:
+        conn.execute("UPDATE articles SET status = 'regenerating', regen_note = %s, regen_requested_at = now(), "
+                     "updated_at = now(), reviewed_at = now() WHERE id = %s", (note or None, article_id))
+
+
+def delete_article(article_id):
+    with connect() as conn:
+        conn.execute("DELETE FROM articles WHERE id = %s", (article_id,))
+
+
+def clear_cache():
+    """Admin changes show up on the site right away (this process; other web pods catch up within CACHE_SECONDS)."""
+    _cache.clear()

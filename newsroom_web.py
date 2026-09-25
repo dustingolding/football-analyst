@@ -1,14 +1,14 @@
-"""Public article pages and the password-protected review queue (/newsroom) for newsroom.py's drafts.
-
-The review queue uses HTTP Basic auth (user "editor", password from NEWSROOM_PASSWORD) and is disabled (404)
-when the variable is unset. Review POSTs carry a CSRF token derived from the password.
+"""Public article pages, and the hidden admin section (/admin) for reviewing, editing, regenerating and removing
+newsroom.py's articles. Admin is off (404) when NEWSROOM_PASSWORD is unset.
 """
 import hashlib
 import hmac
 import os
 import re
+import time
+from datetime import timedelta
 
-from flask import Blueprint, Response, abort, redirect, render_template, request, url_for
+from flask import Blueprint, abort, redirect, render_template, request, session, url_for
 from markupsafe import Markup, escape
 
 import web_data
@@ -67,56 +67,125 @@ def render_article(a, review=False):
                            related=related, review=review)
 
 
-# --- review queue ------------------------------------------------------------------------------------------------
+# --- admin (hidden; not linked anywhere) --------------------------------------------------------------------------
+#
+# /admin: sign in with the newsroom password (Secret "newsroom", env NEWSROOM_PASSWORD; off when unset). A signed
+# session cookie keeps you signed in for 12 hours; every POST carries a CSRF token. Actions per article: approve
+# (publish), deny (reject), take down (back to review), edit, regenerate (the newsroom worker rewrites it, then it
+# returns here for approve/deny) and delete.
+
+SESSION_HOURS = 12
+_attempts = {}  # ip -> recent failed sign-in times (per web process)
+
+
+@bp.record_once
+def _configure(state):
+    app = state.app
+    if PASSWORD and not app.secret_key:
+        # stable across pods and restarts, and rotates with the password
+        app.secret_key = hmac.new(PASSWORD.encode(), b"sidelinewire-admin-session", hashlib.sha256).hexdigest()
+    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                      SESSION_COOKIE_SECURE=os.getenv("SITE_ENV") in ("prod", "dev"),
+                      PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS))
+
 
 def csrf_token():
-    return hmac.new(PASSWORD.encode(), b"newsroom-csrf", hashlib.sha256).hexdigest()
+    return hmac.new(PASSWORD.encode(), f"admin-csrf:{session.get('since', '')}".encode(), hashlib.sha256).hexdigest()
 
 
-@bp.before_request
+def signed_in():
+    since = session.get("since")
+    return bool(since and time.time() - since < SESSION_HOURS * 3600)
+
+
+@bp.before_app_request
 def guard():
-    if not request.path.startswith("/newsroom"):
+    path = request.path
+    if path.startswith("/newsroom"):  # old address
+        return redirect("/admin" + path[len("/newsroom"):], 301) if PASSWORD else abort(404)
+    if not path.startswith("/admin"):
         return None
     if not PASSWORD:
         abort(404)
-    auth = request.authorization
-    if not auth or auth.username != "editor" or not hmac.compare_digest((auth.password or "").encode(), PASSWORD.encode()):
-        return Response("Sign in required", 401, {"WWW-Authenticate": 'Basic realm="SidelineWire newsroom"'})
+    if path == "/admin/login":
+        return None
+    if not signed_in():
+        return redirect(url_for("newsroom_web.login", next=request.full_path if request.method == "GET" else None))
     if request.method == "POST" and not hmac.compare_digest(request.form.get("csrf", ""), csrf_token()):
         abort(400)
     return None
 
 
-@bp.after_request
+@bp.after_app_request
 def no_store(response):
-    if request.path.startswith("/newsroom"):
+    if request.path.startswith(("/admin", "/newsroom")):
         response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Robots-Tag"] = "noindex"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     return response
 
 
-@bp.route("/newsroom")
+@bp.route("/admin/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+        recent = [t for t in _attempts.get(ip, []) if time.time() - t < 300]
+        if len(recent) >= 5:
+            error = "Too many attempts. Try again in a few minutes."
+        elif hmac.compare_digest(request.form.get("password", "").encode(), PASSWORD.encode()):
+            _attempts.pop(ip, None)
+            session.clear()
+            session.permanent = True
+            session["since"] = time.time()
+            nxt = request.args.get("next") or ""
+            return redirect(nxt if nxt.startswith("/admin") else url_for("newsroom_web.queue"))
+        else:
+            _attempts[ip] = recent + [time.time()]
+            error = "Wrong password."
+    return render_template("admin_login.html", error=error), (429 if error and "many" in error else 200)
+
+
+@bp.route("/admin/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("newsroom_web.login"))
+
+
+@bp.route("/admin")
 def queue():
-    return render_template("newsroom.html", queue=web_data.review_queue(), leagues=LEAGUES)
+    return render_template("newsroom.html", queue=web_data.review_queue(), leagues=LEAGUES, csrf=csrf_token())
 
 
-@bp.route("/newsroom/<int:article_id>", methods=["GET", "POST"])
+ACTIONS = {"publish": "published", "reject": "rejected", "takedown": "review"}
+
+
+@bp.route("/admin/<int:article_id>", methods=["GET", "POST"])
 def review(article_id):
     a = web_data.article(article_id=article_id, published_only=False)
     if not a:
         abort(404)
     if request.method == "POST":
         action = request.form.get("action")
-        status = {"publish": "published", "reject": "rejected", "unpublish": "review"}.get(action)
-        edits = {k: request.form.get(k) for k in ("headline", "dek", "body")} if action in ("save", "publish") else {}
-        edits = {k: v.replace("\r\n", "\n").strip() for k, v in edits.items() if v is not None}
-        web_data.update_article(article_id, status=status, **edits)
-        return redirect(url_for("newsroom_web.queue") if status else url_for("newsroom_web.review", article_id=article_id))
+        back = request.form.get("back") == "queue"
+        if action == "delete":
+            web_data.delete_article(article_id)
+            web_data.clear_cache()
+            return redirect(url_for("newsroom_web.queue"))
+        if action == "regenerate":
+            web_data.request_regeneration(article_id, (request.form.get("note") or "").strip()[:500])
+        else:
+            status = ACTIONS.get(action)
+            edits = {k: request.form.get(k) for k in ("headline", "dek", "body")} if action in ("save", "publish") else {}
+            edits = {k: v.replace("\r\n", "\n").strip() for k, v in edits.items() if v is not None}
+            web_data.update_article(article_id, status=status, **edits)
+        web_data.clear_cache()
+        return redirect(url_for("newsroom_web.queue") if back or action in ("publish", "reject")
+                        else url_for("newsroom_web.review", article_id=article_id))
     return render_template("newsroom_article.html", a=a, csrf=csrf_token(), leagues=LEAGUES,
                            facts_text=facts_text(a["facts"]))
 
 
-@bp.route("/newsroom/<int:article_id>/preview")
+@bp.route("/admin/<int:article_id>/preview")
 def review_preview(article_id):
     a = web_data.article(article_id=article_id, published_only=False)
     if not a:

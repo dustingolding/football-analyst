@@ -1,22 +1,42 @@
 {% extends "base.html" %}
-{% block title %}Newsroom{% endblock %}
+{% block title %}Admin{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Newsroom</h1><p class="muted">Drafts that failed a check, and every editorial, wait here for review.</p></div></div>
-{% for status, title in [('review', 'Needs review'), ('published', 'Recently published'), ('rejected', 'Rejected')] %}
+<div class="page-head">
+  <div><h1>Newsroom admin</h1><p class="muted">Approve or deny stories, regenerate them, or take them down.</p></div>
+  <form method="post" action="{{ url_for('newsroom_web.logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="linkish">Sign out</button></form>
+</div>
+{% if queue.regenerating %}<p class="panel regen-note">Rewriting {{ queue.regenerating|length }} {{ 'story' if queue.regenerating|length == 1 else 'stories' }} now; {{ 'it returns' if queue.regenerating|length == 1 else 'they return' }} to "Needs review" in about a minute. Refresh to check.</p>{% endif %}
+{% for status, title in [('regenerating', 'Being rewritten'), ('review', 'Needs review'), ('published', 'Published'), ('rejected', 'Denied')] %}
+  {% if status != 'regenerating' or queue[status] %}
   <h2>{{ title }} <small class="muted">· {{ queue[status]|length }}</small></h2>
   {% if queue[status] %}
-  <div class="table-scroll"><table class="compact">
-    <thead><tr><th>Story</th><th>League</th><th>Kind</th><th>Written</th>{% if status == 'review' %}<th>Why it's here</th>{% endif %}</tr></thead>
+  <div class="table-scroll"><table class="compact admin-table">
+    <thead><tr><th>Story</th><th>League</th><th>Kind</th><th>{{ 'Published' if status == 'published' else 'Updated' }}</th>
+      {% if status == 'review' %}<th>Checks</th>{% endif %}{% if status != 'regenerating' %}<th></th>{% endif %}</tr></thead>
     <tbody>
-    {% for a in queue[status] %}
+    {% for a in queue[status] %}{% set problems = (a.checks or {}).get('problems') or [] %}
       <tr>
-        <td><a href="{{ url_for('newsroom_web.review', article_id=a.id) }}"><strong>{{ a.headline }}</strong></a></td>
-        <td>{{ a.league|upper }}</td><td>{{ a.kind_label }}</td><td class="nowrap muted">{{ a.created_at|kickoff }}</td>
-        {% if status == 'review' %}<td class="small">{% if a.kind == 'editorial' and not (a.checks.problems if a.checks else []) %}Editorials always need review{% else %}{{ ((a.checks or {}).get('problems') or [])|length }} problem(s){% endif %}</td>{% endif %}
+        <td><a href="{{ url_for('newsroom_web.review', article_id=a.id) }}"><strong>{{ a.headline }}</strong></a>
+          {% if a.regen_note %}<div class="muted small">Note: {{ a.regen_note }}</div>{% endif %}</td>
+        <td>{{ a.league|upper }}</td><td class="nowrap">{{ a.kind_label }}</td>
+        <td class="nowrap muted">{{ (a.published_at if status == 'published' else a.updated_at)|kickoff }}</td>
+        {% if status == 'review' %}<td class="small nowrap">{% if problems %}<span class="flag">{{ problems|length }} problem{{ 's' if problems|length > 1 }}</span>{% else %}<span class="ok">passed</span>{% endif %}</td>{% endif %}
+        {% if status != 'regenerating' %}
+        <td class="nowrap">
+          <form method="post" action="{{ url_for('newsroom_web.review', article_id=a.id) }}" class="inline-actions">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="queue">
+            {% if status != 'published' %}<button name="action" value="publish" class="primary">Approve</button>{% endif %}
+            {% if status == 'review' %}<button name="action" value="reject">Deny</button>{% endif %}
+            {% if status == 'published' %}<button name="action" value="takedown">Take down</button>{% endif %}
+            <button name="action" value="regenerate">Regenerate</button>
+          </form>
+        </td>
+        {% endif %}
       </tr>
     {% endfor %}
     </tbody>
   </table></div>
   {% else %}<p class="muted">None.</p>{% endif %}
+  {% endif %}
 {% endfor %}
 {% endblock %}
