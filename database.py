@@ -178,6 +178,45 @@ CREATE TABLE IF NOT EXISTS polls (
 
 CREATE INDEX IF NOT EXISTS player_game_stats_team_idx ON player_game_stats (league, team_id, source);
 
+-- Live game state from ESPN, written every ~30 s by live.py (the web app overlays it on games).
+CREATE TABLE IF NOT EXISTS live_games (
+    league              TEXT        NOT NULL,
+    game_id             TEXT        NOT NULL,
+    state               TEXT        NOT NULL,   -- pre, in, post
+    detail              TEXT,                   -- "7:14 - 1st", "Halftime", "Final/OT"
+    period              INTEGER,
+    clock               TEXT,
+    home_score          INTEGER,
+    away_score          INTEGER,
+    possession_team_id  TEXT,
+    down_distance       TEXT,                   -- "3rd & 7 at CCU 45"
+    red_zone            BOOLEAN,
+    home_timeouts       INTEGER,
+    away_timeouts       INTEGER,
+    home_win_prob       DOUBLE PRECISION,       -- ESPN's in-game win probability
+    last_play           TEXT,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id)
+);
+
+CREATE TABLE IF NOT EXISTS live_plays (
+    league          TEXT    NOT NULL,
+    game_id         TEXT    NOT NULL,
+    play_id         TEXT    NOT NULL,
+    sequence        BIGINT,
+    drive           INTEGER,
+    period          INTEGER,
+    clock           TEXT,
+    team_id         TEXT,
+    play_type       TEXT,
+    text            TEXT,
+    home_score      INTEGER,
+    away_score      INTEGER,
+    scoring         BOOLEAN,
+    home_win_prob   DOUBLE PRECISION,
+    PRIMARY KEY (league, game_id, play_id)
+);
+
 -- One row per game of pre-game features (features.py); targets are NULL until the game is played.
 CREATE TABLE IF NOT EXISTS game_features (
     league        TEXT        NOT NULL,

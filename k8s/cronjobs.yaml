@@ -32,7 +32,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260924-235737
+              image: football-analyst-pipeline:20260925-000539
               imagePullPolicy: Never
               args: ["refresh"]
               envFrom:
@@ -77,7 +77,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260924-235737
+              image: football-analyst-pipeline:20260925-000539
               imagePullPolicy: Never
               args: ["refresh"]
               envFrom:
@@ -122,7 +122,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260924-235737
+              image: football-analyst-pipeline:20260925-000539
               imagePullPolicy: Never
               args: ["daily"]
               envFrom:
@@ -167,7 +167,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260924-235737
+              image: football-analyst-pipeline:20260925-000539
               imagePullPolicy: Never
               args: ["weekly"]
               envFrom:

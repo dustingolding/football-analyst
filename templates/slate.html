@@ -36,12 +36,12 @@
       <th title="Market-adjusted model: home team win probability">Home win</th>
       <th>Projection</th>
       <th title="{{ independent }} model (no betting lines) compared with the spread">Our lean</th>
-      <th>Final</th>
+      <th>Score</th>
     </tr>
   </thead>
   <tbody>
   {% for g in games %}
-    <tr>
+    <tr data-live-game="{{ g.game_id }}" data-league="{{ league }}" data-state="{{ g.state }}" data-kickoff="{{ g.kickoff_ts }}">
       <td class="nowrap muted">{{ g.start_time|kickoff }}</td>
       <td>
         <a class="matchup" href="{{ url_for('game', league=league, game_id=g.game_id) }}">
@@ -75,10 +75,14 @@
         {% else %}–{% endif %}
       </td>
       <td class="nowrap">
-        {% if g.completed and g.home_score is not none %}
-          {{ g.away_score }}–{{ g.home_score }}
+        {% if g.state != 'pre' %}
+          <span class="js-score">{{ g.show_away }}–{{ g.show_home }}</span>
           {% if g.pick_right is defined %}<span class="mark {{ 'hit' if g.pick_right else 'miss' }}">{{ '✓' if g.pick_right else '✗' }}</span>{% endif %}
-        {% else %}<span class="muted">{{ (g.status or '')|replace('STATUS_', '')|replace('_', ' ')|title }}</span>{% endif %}
+          {% if g.state == 'in' %}<div class="js-status live-status"><span class="live-dot">LIVE</span> {{ g.status_text or '' }}</div>{% endif %}
+        {% else %}
+          <span class="js-score"></span>
+          <div class="js-status muted">{{ (g.status or '')|replace('STATUS_', '')|replace('_', ' ')|title }}</div>
+        {% endif %}
       </td>
     </tr>
   {% else %}

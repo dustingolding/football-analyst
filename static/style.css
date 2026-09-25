@@ -243,3 +243,30 @@ table.compact td, table.compact th, table.stats-table td { white-space: nowrap; 
 }
 .brand .brand-name { color: var(--text); }
 .brand .brand-name span { color: #f47b20; } /* the logo's orange */
+
+/* Live games */
+.live-dot { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em;
+  color: #fff; background: var(--miss); border-radius: 4px; padding: 1px 5px; vertical-align: middle; }
+.live-dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: live-pulse 1.4s infinite; }
+@keyframes live-pulse { 50% { opacity: 0.25; } }
+.live-status { font-size: 12.5px; margin-top: 2px; white-space: nowrap; }
+.status-in { font-weight: 700; }
+.gc-live { font-weight: 800; font-variant-numeric: tabular-nums; }
+.situation { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 16px; padding: 10px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--miss); border-radius: 10px; }
+.red-zone { color: var(--miss); font-weight: 800; font-size: 13px; }
+.situation-wp { margin-left: auto; font-size: 13.5px; }
+.wp-chart svg { display: block; width: 100%; height: 140px; }
+.wp-labels { display: flex; flex-direction: column; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.wp-chart { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.wp-chart > .muted { grid-column: 1 / -1; }
+.wp-mid { stroke: var(--line); stroke-dasharray: 4 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.wp-line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.plays { max-height: 520px; overflow-y: auto; }
+.plays td.play-text { white-space: normal; min-width: 260px; }
+.plays tr.scoring td { background: var(--accent-soft); }
+@media (max-width: 640px) { .situation-wp { margin-left: 0; } }
+.wp-axis { grid-column: 2; display: grid; grid-template-columns: repeat(4, 1fr); }
+.wp-axis span { border-left: 1px solid var(--line); padding-left: 4px; }
+.wp-chart > .muted:last-child { grid-column: 1 / -1; }
+.wp-chart > .wp-axis { grid-column: 2; }

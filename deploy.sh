@@ -26,9 +26,10 @@ build pipeline Dockerfile.pipeline
 
 echo "Deploying..."
 sed -i -E "s|^([[:space:]]*image: )football-analyst-web:[^[:space:]]+|\1football-analyst-web:${TAG}|" k8s/app.yaml
-sed -i -E "s|^([[:space:]]*image: )football-analyst-pipeline:[^[:space:]]+|\1football-analyst-pipeline:${TAG}|" k8s/cronjobs.yaml
-kubectl apply -f k8s/namespace.yaml -f k8s/app.yaml -f k8s/ingress.yaml -f k8s/cronjobs.yaml
+sed -i -E "s|^([[:space:]]*image: )football-analyst-pipeline:[^[:space:]]+|\1football-analyst-pipeline:${TAG}|" k8s/cronjobs.yaml k8s/live.yaml
+kubectl apply -f k8s/namespace.yaml -f k8s/app.yaml -f k8s/ingress.yaml -f k8s/cronjobs.yaml -f k8s/live.yaml
 kubectl -n football-analyst rollout status deployment/web --timeout=120s
+kubectl -n football-analyst rollout status deployment/live --timeout=120s
 
 echo "Pruning old images (keeping ${KEEP_IMAGES} of each)..."
 for name in web pipeline; do

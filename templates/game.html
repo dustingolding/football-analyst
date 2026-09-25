@@ -3,14 +3,14 @@
 {% block content %}
 <p><a href="{{ url_for('slate', league=league, season=g.season, type=g.season_type, week=g.week) }}">← {{ league_name }} {{ g.season }} week {{ g.week }}</a></p>
 
-<section class="scoreboard">
+<section class="scoreboard" data-live-game="{{ g.game_id }}" data-league="{{ league }}" data-state="{{ g.state }}" data-kickoff="{{ g.kickoff_ts }}">
   <div class="side">
     {% if g.away_logo %}<img src="{{ g.away_logo }}" alt="">{% endif %}
     <div class="name"><a class="team-link" href="{{ url_for('team_page', league=league, team_id=g.away_team_id, season=g.season) }}">{% if g.away_rank %}<em class="rank">{{ g.away_rank }}</em> {% endif %}{{ g.away_name }}</a></div>
-    {% if g.completed %}<div class="score">{{ g.away_score }}</div>{% endif %}
+    <div class="score js-away">{{ g.show_away if g.show_away is not none else '' }}</div>
   </div>
   <div class="mid">
-    <div class="muted">{{ g.start_time|kickoff }}</div>
+    <div class="js-status status-{{ g.state }}">{% if g.status_text %}{{ g.status_text }}{% else %}<span class="muted">{{ g.start_time|kickoff }}</span>{% endif %}</div>
     <div class="big">{{ 'vs' if g.neutral_site else '@' }}</div>
     <div class="muted small">{{ g.venue_name or '' }}{% if g.venue_city %} · {{ g.venue_city }}{% if g.venue_state %}, {{ g.venue_state }}{% endif %}{% endif %}</div>
     {% if g.notes %}<div class="note">{{ g.notes }}</div>{% endif %}
@@ -18,15 +18,19 @@
   <div class="side">
     {% if g.home_logo %}<img src="{{ g.home_logo }}" alt="">{% endif %}
     <div class="name"><a class="team-link" href="{{ url_for('team_page', league=league, team_id=g.home_team_id, season=g.season) }}">{% if g.home_rank %}<em class="rank">{{ g.home_rank }}</em> {% endif %}{{ g.home_name }}</a></div>
-    {% if g.completed %}<div class="score">{{ g.home_score }}</div>{% endif %}
+    <div class="score js-home">{{ g.show_home if g.show_home is not none else '' }}</div>
   </div>
 </section>
 
 <div class="cards">
   <div class="card"><span>Vegas spread</span><strong>{{ g.spread_text }}</strong></div>
   <div class="card"><span>Vegas total</span><strong>{{ g.total|num }}</strong></div>
-  <div class="card"><span>{{ g.home_abbr }} win probability</span><strong>{{ g.win_prob|pct }}</strong></div>
-  <div class="card"><span>Projected score</span><strong>{% if g.proj_home is defined %}{{ g.away_abbr }} {{ g.proj_away|round|int }} – {{ g.proj_home|round|int }} {{ g.home_abbr }}{% else %}–{% endif %}</strong></div>
+  <div class="card"><span>{{ g.home_abbr }} win probability (pre-game)</span><strong>{{ g.win_prob|pct }}</strong></div>
+  <div class="card"><span>Projected score (pre-game)</span><strong>{% if g.proj_home is defined %}{{ g.away_abbr }} {{ g.proj_away|round|int }} – {{ g.proj_home|round|int }} {{ g.home_abbr }}{% else %}–{% endif %}</strong></div>
+</div>
+
+<div id="live-panel" data-live-panel="{{ url_for('game_live_panel', league=league, game_id=g.game_id) }}">
+  {% include "_live_panel.html" %}
 </div>
 
 <h2>Models</h2>

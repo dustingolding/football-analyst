@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
 
 import web_data
 from database import closing_lines, connect
@@ -175,7 +175,96 @@ def attach_predictions(league, games):
                 g["pick_right"] = (g["win_prob"] > 0.5) == (actual > 0)
             if g["edge"] is not None and actual + spread != 0 and abs(g["edge"]) >= 0.5:
                 g["lean_right"] = (g["edge"] > 0) == (actual + spread > 0)
+    attach_live(league, games)
     return games
+
+
+def live_rows(league, ids):
+    return {r["game_id"]: r for r in query(
+        "SELECT game_id, state, detail, period, clock, home_score, away_score, possession_team_id, down_distance, "
+        "red_zone, home_timeouts, away_timeouts, home_win_prob, last_play, updated_at FROM live_games "
+        "WHERE league = %s AND game_id = ANY(%s)", (league, ids))}
+
+
+def attach_live(league, games):
+    """Overlay live state: g['state'] is pre / in / final, with the scores to display.
+
+    Games finish in live_games minutes before the refresh pipeline marks them completed,
+    so a live 'post' counts as final."""
+    live = live_rows(league, [g["game_id"] for g in games]) if games else {}
+    for g in games:
+        row = live.get(g["game_id"])
+        g["live"] = row if row and row["state"] in ("in", "post") and not g["completed"] else None
+        if g["completed"]:
+            g["state"], g["show_home"], g["show_away"] = "final", g["home_score"], g["away_score"]
+        elif g["live"]:
+            g["state"] = "in" if row["state"] == "in" else "final"
+            g["show_home"], g["show_away"] = row["home_score"], row["away_score"]
+        else:
+            g["state"], g["show_home"], g["show_away"] = "pre", None, None
+        g["status_text"] = (row or {}).get("detail") if g["live"] else ("Final" if g["state"] == "final" else None)
+        g["kickoff_ts"] = int(g["start_time"].timestamp()) if g.get("start_time") else 0
+
+
+def live_payload(row):
+    return {
+        "state": "in" if row["state"] == "in" else ("final" if row["state"] == "post" else "pre"),
+        "detail": row["detail"], "home": row["home_score"], "away": row["away_score"],
+        "home_win_prob": row["home_win_prob"], "down_distance": row["down_distance"],
+        "possession": row["possession_team_id"], "red_zone": row["red_zone"], "last_play": row["last_play"],
+    }
+
+
+@app.route("/api/live/<league>")
+def api_live(league):
+    """Live state for the requested games (?ids=1,2,3), for pages polling every 30 s."""
+    league_or_404(league)
+    ids = [i for i in request.args.get("ids", "").split(",") if i.isdigit()][:300]
+    rows = live_rows(league, ids) if ids else {}
+    response = jsonify({gid: live_payload(r) for gid, r in rows.items() if r["state"] in ("in", "post")})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def live_panel_context(league, g):
+    """Situation, win-probability series and plays for a game's live panel."""
+    plays = query(
+        "SELECT play_id, sequence, drive, period, clock, team_id, play_type, text, home_score, away_score, scoring, "
+        "home_win_prob FROM live_plays WHERE league = %s AND game_id = %s ORDER BY sequence, play_id",
+        (league, g["game_id"]))
+    series = [p["home_win_prob"] for p in plays if p["home_win_prob"] is not None]
+    points = ""
+    if len(series) >= 2:
+        # x = game time elapsed (0-60 min, stretched for overtime), so the line fills in as the game goes.
+        def elapsed(p):
+            try:
+                minutes, seconds = (p["clock"] or "0:00").split(":")
+                left = int(minutes) * 60 + int(float(seconds))
+            except ValueError:
+                left = 0
+            return (min(p["period"] or 1, 5) - 1) * 900 + (900 - min(left, 900))
+        timed = [(elapsed(p), p["home_win_prob"]) for p in plays if p["home_win_prob"] is not None]
+        span = max(3600, max(t for t, _ in timed))
+        w, h = 600, 120
+        points = " ".join(f"{t * w / span:.1f},{(1 - v) * h:.1f}" for t, v in timed)
+    team_abbr = {g["home_team_id"]: g["home_abbr"], g["away_team_id"]: g["away_abbr"]}
+    for p in plays:
+        p["team_abbr"] = team_abbr.get(p["team_id"], "")
+    return {"plays": list(reversed(plays))[:80], "wp_points": points, "wp_last": series[-1] if series else None,
+            "live": g.get("live")}
+
+
+@app.route("/<league>/game/<game_id>/live")
+def game_live_panel(league, game_id):
+    """The game page's live panel, re-fetched every 30 s by static/live.js."""
+    league_or_404(league)
+    rows = query(GAME_SQL + " WHERE g.league = %s AND g.game_id = %s", (league, game_id))
+    if not rows:
+        abort(404)
+    g = attach_predictions(league, rows)[0]
+    response = app.make_response(render_template("_live_panel.html", g=g, league=league, **live_panel_context(league, g)))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def current_week(league):
@@ -348,7 +437,7 @@ def game(league, game_id):
     models = [(MODEL_LABELS.get(k, k), MODEL_NOTES.get(k, ""), v) for k, v in sorted(
         g["preds"].items(), key=lambda kv: list(MODEL_LABELS).index(kv[0]) if kv[0] in MODEL_LABELS else 99)]
     return render_template("game.html", league=league, league_name=LEAGUES[league], g=g, matchup=matchup,
-                           models=models, books=books, context=f)
+                           models=models, books=books, context=f, **live_panel_context(league, g))
 
 
 @app.route("/<league>/ratings")
