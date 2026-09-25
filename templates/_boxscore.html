@@ -1,0 +1,30 @@
+{# Player box score (ESPN columns), away and home side by side per category. Inside the live panel, so it refreshes during games. #}
+{% macro box_table(cat, logo, abbr) -%}
+  <div class="table-scroll box-table">
+    <table class="compact">
+      <thead><tr><th class="box-team">{% if logo %}<img src="{{ logo }}" alt="">{% endif %}{{ abbr }}</th>{% for l in cat.labels %}<th>{{ l }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for p in cat.players %}<tr><td class="nowrap">{{ p.name }}</td>{% for v in p.stats %}<td>{{ v }}</td>{% endfor %}</tr>{% endfor %}
+        {% if cat.totals and cat.totals|select|list and cat.players|length > 1 %}<tr class="box-total"><td>Team</td>{% for v in cat.totals %}<td>{{ v }}</td>{% endfor %}</tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+{%- endmacro %}
+{% macro box_row(c, g) -%}
+  <h3 class="box-cat">{{ c.title }}</h3>
+  <div class="box-grid">
+    {% if c.away %}{{ box_table(c.away, g.away_logo, g.away_abbr) }}{% else %}<p class="muted small">{{ g.away_abbr }}: none</p>{% endif %}
+    {% if c.home %}{{ box_table(c.home, g.home_logo, g.home_abbr) }}{% else %}<p class="muted small">{{ g.home_abbr }}: none</p>{% endif %}
+  </div>
+{%- endmacro %}
+{% if box %}
+  <h2>Box score {% if not box.final %}<small class="muted">· updating live</small>{% endif %}</h2>
+  {% for c in box.categories if c.main %}{{ box_row(c, g) }}{% endfor %}
+  {% set more = box.categories|rejectattr('main')|list %}
+  {% if more %}
+  <details class="box-more" data-keep-open="box-more">
+    <summary>Defense, returns and kicking</summary>
+    {% for c in more %}{{ box_row(c, g) }}{% endfor %}
+  </details>
+  {% endif %}
+{% endif %}

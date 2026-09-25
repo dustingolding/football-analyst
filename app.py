@@ -246,7 +246,8 @@ def live_panel_context(league, g):
     team_abbr = {g["home_team_id"]: g["home_abbr"], g["away_team_id"]: g["away_abbr"]}
     for p in plays:
         p["team_abbr"] = team_abbr.get(p["team_id"], "")
-    return {"plays": list(reversed(plays))[:80], "wp": wp,
+    box = web_data.game_boxscore(league, g["game_id"], g["away_team_id"], g["home_team_id"])
+    return {"plays": list(reversed(plays))[:80], "wp": wp, "box": box,
             "live": g.get("live")}
 
 

@@ -775,3 +775,24 @@ def update_article(article_id, status=None, headline=None, dek=None, body=None):
             sets.append("published_at = COALESCE(published_at, now())")
     with connect() as conn:
         conn.execute(f"UPDATE articles SET {', '.join(sets)} WHERE id = %s", (*params, article_id))
+
+
+BOX_MAIN = ("passing", "rushing", "receiving")
+BOX_MORE = ("defensive", "interceptions", "fumbles", "kickReturns", "puntReturns", "kicking", "punting")
+
+
+def game_boxscore(league, game_id, away_id, home_id):
+    """ESPN player box score arranged for side-by-side display: [(category name, title, away cat, home cat)],
+    main categories first. None when we have no box score for the game."""
+    rows = query("SELECT data, final, updated_at FROM game_boxscores WHERE league = %s AND game_id = %s",
+                 (league, game_id))
+    if not rows:
+        return None
+    by_team = {t["team_id"]: {c["name"]: c for c in t["categories"]} for t in rows[0]["data"]}
+    away, home = by_team.get(str(away_id), {}), by_team.get(str(home_id), {})
+    out = []
+    for name in BOX_MAIN + BOX_MORE:
+        a, h = away.get(name), home.get(name)
+        if a or h:
+            out.append({"name": name, "title": (a or h)["title"], "away": a, "home": h, "main": name in BOX_MAIN})
+    return {"categories": out, "final": rows[0]["final"], "updated_at": rows[0]["updated_at"]} if out else None

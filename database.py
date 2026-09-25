@@ -343,6 +343,17 @@ CREATE TABLE IF NOT EXISTS game_features (
     PRIMARY KEY (league, game_id)
 );
 
+-- ESPN player box score per game (live.py while live and at the final; espn_boxscores.py backfills), as
+-- [{team_id, categories: [{name, title, labels, players: [{id, name, stats}], totals}]}] in ESPN's own columns.
+CREATE TABLE IF NOT EXISTS game_boxscores (
+    league      TEXT        NOT NULL,
+    game_id     TEXT        NOT NULL,
+    data        JSONB       NOT NULL,
+    final       BOOLEAN     NOT NULL DEFAULT false,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id)
+);
+
 -- Newsroom articles (newsroom.py): previews, recaps, editorials. The web app's read-only role may only
 -- change review fields (approve / reject / edit from /newsroom).
 CREATE TABLE IF NOT EXISTS articles (

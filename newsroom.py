@@ -850,6 +850,8 @@ def due_previews(conn, league, limit, game_id=None):
 
 def run_game(conn, client, kind, g, dry_run, show_facts=False):
     summary = client.get("summary", params={"event": g["game_id"]})
+    if not dry_run:
+        live.save_boxscore(conn, g["league"], g["game_id"], summary, bool(g["completed"]))
     if kind == "recap":
         plays = live.plays_from_summary(g["league"], g["game_id"], summary)
         if plays and not dry_run:

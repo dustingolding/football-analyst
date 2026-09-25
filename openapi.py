@@ -74,7 +74,13 @@ SCHEMAS = {
         "sportsbooks": arr(obj({"source": S, "provider": S, "home_spread": NN, "total": NN, "home_moneyline": NI,
                                 "away_moneyline": NI, "opening_home_spread": NN})),
         "injuries": obj({side: arr(ref("Injury")) for side in ("home", "away")}),
+        "box_score": nullable(ref("BoxScore")),
     })]},
+    "BoxScoreSide": obj({"players": arr(obj({"id": S, "name": NS, "stats": arr(S)})), "totals": nullable(arr(S))}),
+    "BoxScore": obj({"final": B, "categories": arr(obj({
+        "name": {"type": "string", "description": "passing, rushing, receiving, defensive, interceptions, fumbles, "
+                                                  "kickReturns, puntReturns, kicking, punting"},
+        "title": S, "labels": arr(S), "home": nullable(ref("BoxScoreSide")), "away": nullable(ref("BoxScoreSide"))}))}),
     "Injury": obj({"player": S, "position": NS, "status": S, "games": NI, "detail": NS, "url": NS}),
     "Play": obj({"id": S, "sequence": NI, "drive": NI, "period": NI, "clock": NS, "team_id": NS, "type": NS, "text": NS,
                  "home_score": NI, "away_score": NI, "scoring": B, "home_win_prob": NN}),

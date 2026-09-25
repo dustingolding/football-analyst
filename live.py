@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+from psycopg.types.json import Jsonb
 
 from database import connect, init_db
 from espn_client import LEAGUES, EspnClient
@@ -122,6 +123,39 @@ def plays_from_summary(league, game_id, summary):
     return rows
 
 
+BOX_TITLES = {"passing": "Passing", "rushing": "Rushing", "receiving": "Receiving", "fumbles": "Fumbles",
+              "defensive": "Defense", "interceptions": "Interceptions", "kickReturns": "Kick returns",
+              "puntReturns": "Punt returns", "kicking": "Kicking", "punting": "Punting"}
+
+
+def boxscore_from_summary(summary):
+    """Player box score from an ESPN game summary, in ESPN's own columns (both leagues use the same shape)."""
+    teams = []
+    for t in (summary.get("boxscore") or {}).get("players") or []:
+        cats = []
+        for c in t.get("statistics") or []:
+            players = [{"id": str((a.get("athlete") or {}).get("id") or ""),
+                        "name": (a.get("athlete") or {}).get("displayName"),
+                        "stats": a.get("stats") or []}
+                       for a in c.get("athletes") or [] if a.get("stats")]
+            if players:
+                cats.append({"name": c.get("name"), "title": BOX_TITLES.get(c.get("name"), c.get("text") or c.get("name")),
+                             "labels": c.get("labels") or [], "players": players, "totals": c.get("totals") or []})
+        if cats:
+            teams.append({"team_id": str((t.get("team") or {}).get("id")), "categories": cats})
+    return teams
+
+
+def save_boxscore(conn, league, game_id, summary, final):
+    teams = boxscore_from_summary(summary)
+    if teams:
+        conn.execute(
+            "INSERT INTO game_boxscores (league, game_id, data, final) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (league, game_id) DO UPDATE SET data = EXCLUDED.data, final = EXCLUDED.final, updated_at = now()",
+            (league, game_id, Jsonb(teams), final))
+    return bool(teams)
+
+
 def save_plays(conn, rows):
     with conn.transaction(), conn.cursor() as cur:
         cur.executemany(
@@ -170,7 +204,9 @@ def run(once=False):
                     if now - last_plays.get(key, datetime.min.replace(tzinfo=timezone.utc)) < timedelta(seconds=PLAYS_EVERY - 5):
                         continue
                     try:
-                        save_plays(conn, plays(client, game_id))
+                        summary = client.get("summary", params={"event": game_id})
+                        save_plays(conn, plays_from_summary(league, game_id, summary))
+                        save_boxscore(conn, league, game_id, summary, kickoffs[game_id][0] == "post")
                         last_plays[key] = now
                     except requests.RequestException as exc:
                         print(f"[live] {league} {game_id} plays failed: {exc}", flush=True)

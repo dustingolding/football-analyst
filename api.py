@@ -205,7 +205,20 @@ def game(league, game_id):
     data["injuries"] = {side: [{"player": r["player_name"], "position": r["position"], "status": r["status"],
                                 "games": r.get("games"), "detail": r.get("detail") or r.get("headline"),
                                 "url": r.get("url")} for r in availability[side]] for side in ("home", "away")}
+    data["box_score"] = box_score(league, g)
     return respond(data, max_age=30 if g["state"] == "in" else 300)
+
+
+def box_score(league, g):
+    """Player box score by category, in ESPN's columns: {final, categories: [{name, title, labels, home, away}]}."""
+    box = web_data.game_boxscore(league, g["game_id"], g["away_team_id"], g["home_team_id"])
+    if not box:
+        return None
+    side = lambda c: c and {"players": [{"id": p["id"], "name": p["name"], "stats": p["stats"]} for p in c["players"]],  # noqa: E731
+                            "totals": c["totals"] or None}
+    return {"final": box["final"], "categories": [
+        {"name": c["name"], "title": c["title"], "labels": (c["away"] or c["home"])["labels"],
+         "home": side(c["home"]), "away": side(c["away"])} for c in box["categories"]]}
 
 
 @bp.get("/<league>/games/<game_id>/live")

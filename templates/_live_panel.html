@@ -20,6 +20,8 @@
            g.home_abbr ~ ' win probability after each play (ESPN)' ~ (' · now ' ~ (wp.last|pct) if live and live.state == 'in' else '')) }}
 {% endif %}
 
+{% include "_boxscore.html" %}
+
 {% if plays %}
   <h2>Play-by-play <small class="muted">· {{ plays|length }} most recent</small></h2>
   <div class="table-scroll plays">
