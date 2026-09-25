@@ -797,3 +797,43 @@ def game_boxscore(league, game_id, away_id, home_id):
         if a or h:
             out.append({"name": name, "title": (a or h)["title"], "away": a, "home": h, "main": name in BOX_MAIN})
     return {"categories": out, "final": rows[0]["final"], "updated_at": rows[0]["updated_at"]} if out else None
+
+
+KIND_WEIGHT = {"recap": 5, "ratings": 5, "editorial": 4, "preview": 3}
+
+
+def lead_stories(league=None, n=4):
+    """The hero's stories: the week's biggest published story first, then the next most newsworthy.
+    Newsworthiness = kind (recaps and power ratings lead) + upsets and ranked matchups - age (1 point per 12 h)."""
+    def build():
+        where, params = ["a.status = 'published'", "a.published_at > now() - interval '7 days'"], []
+        if league:
+            where.append("a.league = %s")
+            params.append(league)
+        rows = query(f"""
+            SELECT a.id, a.league, a.kind, a.slug, a.headline, a.dek, a.published_at,
+                   extract(epoch FROM now() - a.published_at) / 3600 AS age_h,
+                   (a.facts->'game')::text LIKE '%%Upset: yes%%' AS upset, a.facts->'_table'->0 AS top_team,
+                   g.home_rank, g.away_rank, h.logo AS home_logo, h.color AS home_color, h.short_name AS home_short,
+                   aw.logo AS away_logo, aw.color AS away_color, aw.short_name AS away_short
+            FROM articles a
+            LEFT JOIN games g ON g.league = a.league AND g.game_id = a.game_id
+            LEFT JOIN teams h ON h.league = g.league AND h.team_id = g.home_team_id
+            LEFT JOIN teams aw ON aw.league = g.league AND aw.team_id = g.away_team_id
+            WHERE {' AND '.join(where)}""", params)
+        top_colors = {}
+        for r in rows:
+            if r["top_team"]:
+                t = r["top_team"]
+                info = teams(r["league"]).get(t.get("team_id")) or {}
+                r.update(home_logo=t.get("logo"), home_color=info.get("color"), home_short=t.get("short"),
+                         away_logo=None, away_color=info.get("alternate_color"))
+            score = KIND_WEIGHT.get(r["kind"], 2) - float(r["age_h"]) / 12
+            score += 3 if r["upset"] else 0
+            for rank in (r["home_rank"], r["away_rank"]):
+                if rank:
+                    score += 2 if rank <= 10 else 1
+            r["score"] = score
+            r["kind_label"] = KIND_LABELS.get(r["kind"], r["kind"].title())
+        return sorted(rows, key=lambda r: -r["score"])[:n]
+    return cached(("lead", league, n), build)

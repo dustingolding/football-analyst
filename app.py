@@ -358,12 +358,15 @@ def ap_top(n=10):
 
 @app.route("/")
 def home():
+    lead = web_data.lead_stories(None)
     featured = {league: featured_games(league) for league in LEAGUES}
     edges = [(league, g) for league in LEAGUES for g in model_edges(league)]
     return render_template(
         "home.html", featured=featured, edges=edges, power=power_top("nfl"), ap=ap_top(),
         results={lg: last_week_results(lg) for lg in LEAGUES}, records={lg: season_record(lg) for lg in LEAGUES},
-        independent=INDEPENDENT_MODEL, stories=web_data.latest_articles(None, 6),
+        independent=INDEPENDENT_MODEL, lead=lead, stories=[a for a in web_data.latest_articles(None, 10)
+                                                          if a["id"] not in {x["id"] for x in lead}][:6],
+        league=None,
     )
 
 
@@ -374,6 +377,7 @@ def league_home(league):
     if request.args.get("week") or request.args.get("season"):  # old slate links
         return redirect(url_for("slate", league=league, **request.args))
     season, season_type, week = current_week(league)
+    lead = web_data.lead_stories(league)
     games = featured_games(league, limit=12)
     live = [g for g in games if g["state"] == "in"]
     groups = web_data.standings(league, season)
@@ -396,7 +400,7 @@ def league_home(league):
         week=week, games=games, live=live, edges=model_edges(league), power=power_top(league),
         ap=ap_top() if league == "cfb" else [], leaders_by_group=leaders_by_group, boards=boards, outlook=outlook,
         result=last_week_results(league), record=season_record(league), independent=MODEL_LABELS[INDEPENDENT_MODEL[league]],
-        stories=web_data.latest_articles(league, 6),
+        lead=lead, stories=[a for a in web_data.latest_articles(league, 10) if a["id"] not in {x["id"] for x in lead}][:6],
     )
 
 

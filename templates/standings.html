@@ -24,19 +24,19 @@
     <div class="table-scroll"><table class="compact">
       <thead><tr>
         <th>Team</th>
-        {% if league == 'nfl' %}<th>W-L</th><th>Pct</th><th>Div</th><th>Conf</th>{% else %}<th>Conf</th><th>Overall</th>{% endif %}
-        <th>PF</th><th>PA</th><th>Diff</th><th>Strk</th>
+        {% if league == 'nfl' %}<th>W-L</th><th class="opt">Pct</th><th>Div</th><th>Conf</th>{% else %}<th>Conf</th><th>Overall</th>{% endif %}
+        <th class="opt">PF</th><th class="opt">PA</th><th>Diff</th><th class="opt2">Strk</th>
       </tr></thead>
       <tbody>
       {% for t in group.teams %}
         <tr>
           <td class="nowrap">{{ team_link(league, t.team_id, t.team, ranks.get(t.team_id), short=(league == 'nfl')) }}</td>
           {% if league == 'nfl' %}
-            <td><strong>{{ t.overall }}</strong></td><td>{{ '%.3f'|format(t.pct)|replace('0.', '.') }}</td><td>{{ t.div }}</td><td>{{ t.conf }}</td>
+            <td><strong>{{ t.overall }}</strong></td><td class="opt">{{ '%.3f'|format(t.pct)|replace('0.', '.') }}</td><td>{{ t.div }}</td><td>{{ t.conf }}</td>
           {% else %}
             <td><strong>{{ t.conf }}</strong></td><td>{{ t.overall }}</td>
           {% endif %}
-          <td>{{ t.pf }}</td><td>{{ t.pa }}</td><td>{{ '%+d'|format(t.pf - t.pa) }}</td><td class="muted">{{ t.streak }}</td>
+          <td class="opt">{{ t.pf }}</td><td class="opt">{{ t.pa }}</td><td>{{ '%+d'|format(t.pf - t.pa) }}</td><td class="muted opt2">{{ t.streak }}</td>
         </tr>
       {% endfor %}
       </tbody>
