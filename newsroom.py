@@ -31,6 +31,13 @@ from espn_client import EspnClient
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama.ai.svc.cluster.local:11434")
 MODEL = os.getenv("NEWSROOM_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M"))
+# Writer/verifier: OpenAI when OPENAI_KEY is set (NEWSROOM_PROVIDER=openai, the default then), else local Ollama.
+# If OpenAI fails, the call falls back to Ollama.
+OPENAI_KEY = os.getenv("OPENAI_KEY", "").strip().strip('"')
+PROVIDER = os.getenv("NEWSROOM_PROVIDER", "openai" if OPENAI_KEY else "ollama")
+OPENAI_MODELS = {"writer": os.getenv("NEWSROOM_OPENAI_MODEL", "gpt-5.5"),
+                 "verify": os.getenv("NEWSROOM_OPENAI_VERIFY_MODEL", "gpt-5.4-mini")}
+USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "fallbacks": 0}
 # 1: previews/recaps that pass every check publish on their own; 0: everything waits in /newsroom for review.
 AUTOPUBLISH = os.getenv("NEWSROOM_AUTOPUBLISH", "0") == "1"
 LOCK_ID = 7352041  # separate from pipeline.py's lock: the newsroom can run alongside a refresh
@@ -481,7 +488,40 @@ TASKS = {
 }
 
 
-def ask(messages, temperature=0.3):
+def ask(messages, temperature=0.3, role="writer"):
+    """Chat in JSON mode with the configured provider; OpenAI failures fall back to the local model."""
+    if PROVIDER == "openai" and OPENAI_KEY:
+        try:
+            return ask_openai(messages, role)
+        except (requests.RequestException, KeyError, ValueError) as e:
+            USAGE["fallbacks"] += 1
+            print(f"[newsroom] OpenAI failed ({e!r:.200}); using local model", flush=True)
+    return ask_ollama(messages, temperature)
+
+
+def ask_openai(messages, role):
+    for attempt in range(3):
+        r = requests.post("https://api.openai.com/v1/chat/completions", timeout=(5, 300),
+                          headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                          json={"model": OPENAI_MODELS[role], "messages": messages, "max_completion_tokens": 6000,
+                                "response_format": {"type": "json_object"}})
+        if r.status_code in (429, 500, 502, 503) and attempt < 2:
+            time.sleep(5 * (attempt + 1))
+            continue
+        r.raise_for_status()
+        break
+    j = r.json()
+    USAGE["calls"] += 1
+    USAGE["input_tokens"] += j.get("usage", {}).get("prompt_tokens", 0)
+    USAGE["output_tokens"] += j.get("usage", {}).get("completion_tokens", 0)
+    content = j["choices"][0]["message"]["content"] or ""
+    try:
+        return json.loads(content), content
+    except json.JSONDecodeError:
+        return None, content
+
+
+def ask_ollama(messages, temperature=0.3):
     """Chat in JSON mode. A 500 "token repeat limit reached" means the model looped; retry warmer."""
     for temp in (temperature, temperature + 0.3):
         r = requests.post(f"{OLLAMA_URL}/api/chat", timeout=(5, 600), json={
@@ -692,7 +732,7 @@ def verify(article, facts):
     text = f"HEADLINE: {article['headline']}\nDEK: {article['dek']}\n\n{article['body']}"
     sheet = facts_text(facts)
     out, _ = ask([{"role": "system", "content": VERIFY},
-                  {"role": "user", "content": sheet + "\n\nARTICLE:\n" + text}], temperature=0)
+                  {"role": "user", "content": sheet + "\n\nARTICLE:\n" + text}], temperature=0, role="verify")
     errors = (out or {}).get("errors") if isinstance(out, dict) else None
     if errors is None:
         return ["fact-check pass did not return a result"]
@@ -703,7 +743,7 @@ def verify(article, facts):
         if not quote.strip() or re.search(r"\bcorrect\b", problem, re.I) and not re.search(r"incorrect|not correct", problem, re.I):
             continue
         res, _ = ask([{"role": "system", "content": CONFIRM},
-                      {"role": "user", "content": f"{sheet}\n\nCLAIM: {quote}"}], temperature=0)
+                      {"role": "user", "content": f"{sheet}\n\nCLAIM: {quote}"}], temperature=0, role="verify")
         if isinstance(res, dict) and res.get("supported") is False:
             confirmed.append(f"fact-check: \"{quote[:140]}\" - {res.get('detail') or problem}")
     return confirmed[:6]
@@ -803,6 +843,10 @@ def write(kind, facts, retries=3):
 # ---------------------------------------------------------------------------------------------- storage
 
 
+def writer_model():
+    return OPENAI_MODELS["writer"] if PROVIDER == "openai" and OPENAI_KEY and not USAGE["fallbacks"] else MODEL
+
+
 def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:80]
 
@@ -821,7 +865,7 @@ def save(conn, league, kind, game_id, article, facts, problems, attempts, publis
         """,
         (league, kind, game_id, key or game_id, season, week, slug, (a.get("headline") or f"Untitled {kind}")[:200],
          a.get("dek"), a.get("body") or "", json.dumps(facts, default=str),
-         json.dumps({"problems": problems, "attempts": attempts}), status, MODEL, status))
+         json.dumps({"problems": problems, "attempts": attempts}), status, writer_model(), status))
     return status, slug
 
 
@@ -924,6 +968,9 @@ def main():
                     except (requests.RequestException, KeyError, ValueError) as e:
                         failures += 1
                         print(f"[newsroom] {kind} {league} {g['game_id']} failed: {e!r}", flush=True)
+        if USAGE["calls"]:
+            print(f"[newsroom] OpenAI: {USAGE['calls']} calls, {USAGE['input_tokens']} in / {USAGE['output_tokens']} out "
+                  f"tokens, {USAGE['fallbacks']} fallbacks", flush=True)
         return 1 if failures and failures >= 3 else 0
 
 

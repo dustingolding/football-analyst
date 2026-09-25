@@ -36,6 +36,9 @@ spec:
               envFrom:
                 - secretRef:
                     name: pipeline-env
+                - secretRef:        # OPENAI_KEY: GPT writes and checks; without it the local model does
+                    name: openai
+                    optional: true
               env:
                 - {name: NEWSROOM_LIMIT, value: "6"}
                 - {name: NEWSROOM_AUTOPUBLISH, value: "${NEWSROOM_AUTOPUBLISH}"}
