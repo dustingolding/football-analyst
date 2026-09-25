@@ -119,13 +119,40 @@ SCHEMAS = {
         "transfers_in": I, "transfers_out": I})]},
     "LeaderBoard": obj({"category": S, "title": S, "entries": arr(obj({
         "name": NS, "position": NS, "team_id": S, "games": I, "value": S}))}),
-    "Article": obj({"id": S, "slug": S, "league": S, "kind": {"type": "string", "enum": ["preview", "recap", "editorial"]},
+    "Article": obj({"id": S, "slug": S, "league": S, "kind": {"type": "string", "enum": ["preview", "recap", "ratings", "editorial"]},
                     "game_id": NS, "headline": S, "dek": NS, "published_at": nullable({"type": "string", "format": "date-time"}),
                     "url": S}),
     "ArticleDetail": {"allOf": [ref("Article"), obj({"paragraphs": arr(S)})]},
     "ModelMetrics": obj({"model": S, "description": S, "log_loss": NN, "brier": NN, "accuracy": NN, "margin_mae": NN,
                          "total_mae": NN, "ats": NN}),
+    "DeviceRegistration": obj({
+        "apns_token": {"type": "string", "description": "APNs device token, hex"},
+        "environment": {"type": "string", "enum": ["sandbox", "production"],
+                        "description": "sandbox for Xcode/debug builds, production for TestFlight and the App Store"},
+        "bundle_id": S,
+        "timezone": {**NS, "description": "IANA name, e.g. America/New_York"},
+        "alerts": obj({"kickoff": B, "scoring": B, "final": B}, []),
+        "follows": arr(obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "team_id": S})),
+    }, ["apns_token", "environment", "bundle_id", "follows"]),
 }
+
+
+def write(method, summary, data, params=(), body=None, description=""):
+    """A non-GET operation (device registration); same error shapes as get()."""
+    operation = {
+        "summary": summary, "description": description, "parameters": list(params),
+        "responses": {
+            "200": {"description": "OK", "content": {"application/json": {"schema": envelope(data)}}},
+            "400": {"description": "Invalid request", "content": {"application/json": {"schema": ref("Error")}}},
+            "401": {"description": "Missing or invalid API key", "content": {"application/json": {"schema": ref("Error")}}},
+            "429": {"description": "Rate limited", "content": {"application/json": {"schema": ref("Error")}}},
+        }}
+    if body:
+        operation["requestBody"] = {"required": True, "content": {"application/json": {"schema": body}}}
+    return {method: operation}
+
+
+INSTALL_ID = param("install_id", "path", {"type": "string", "format": "uuid"}, description="Random id the app keeps per install")
 
 
 def get(summary, data, params=(), meta=None, description=""):
@@ -182,12 +209,21 @@ SPEC = {
             param("group", description="Conference (CFB) or conference/division (NFL)")],
             {"season": NI, "type": S, "group": NS}),
         "/{league}/articles": get("Published stories, newest first", arr(ref("Article")), [
-            LEAGUE, param("kind", schema={"type": "string", "enum": ["preview", "recap", "editorial"]}),
+            LEAGUE, param("kind", schema={"type": "string", "enum": ["preview", "recap", "ratings", "editorial"]}),
             param("limit", schema=I, description="1-50, default 20"), param("offset", schema=I)],
             description="Written by our AI newsroom from game data and fact-checked before publishing."),
         "/{league}/articles/{slug}": get("One story, as plain paragraphs", ref("ArticleDetail"),
                                          [LEAGUE, param("slug", "path")]),
         "/models": get("Model performance on test seasons", {"type": "object", "additionalProperties": obj({
             "games": I, "test_first_season": I, "models": arr(ref("ModelMetrics"))})}),
+        "/devices/{install_id}": {
+            **write("put", "Register an install for push notifications",
+                    obj({"install_id": S, "follows": I, "alerts": obj({"kickoff": B, "scoring": B, "final": B})}),
+                    [INSTALL_ID], ref("DeviceRegistration"),
+                    description="Replaces the install's token, alert switches and followed teams in one call; "
+                                "send the whole state again whenever any of it changes."),
+            **write("delete", "Stop push notifications for an install", obj({"install_id": S, "deleted": B}),
+                    [INSTALL_ID]),
+        },
     },
 }
