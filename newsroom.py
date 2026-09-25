@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 import live
+import web_data
 from database import closing_lines, connect, init_db
 from espn_client import EspnClient
 
@@ -486,7 +487,6 @@ def ratings_table(conn, league):
     """Every team (NFL, or FBS) ranked by power rating, with the columns of the weekly Power Ratings article.
     Rating = points better or worse than an average team on a neutral field (Elo scaled by the Elo model's
     points-per-Elo). Rank change is against the previous week's article when there is one."""
-    import web_data  # noqa: PLC0415 (only the ratings article needs the site's data helpers)
     season = rows(conn, "SELECT max(season) AS s FROM games WHERE league = %s AND completed", (league,))[0]["s"]
     week = last_finished_week(conn, league, season)
     power = {t: r for t, r in web_data.power_ratings(league, season).items() if web_data.is_major(league, t, season)}
@@ -1119,6 +1119,9 @@ def save(conn, league, kind, game_id, article, facts, problems, attempts, publis
          a.get("dek"), a.get("body") or "", json.dumps(facts, default=str),
          json.dumps({"problems": problems, "attempts": attempts, "usage": dict(LAST_USAGE)}), status, writer_model(),
          status))
+    row = rows(conn, "SELECT id FROM articles WHERE league = %s AND kind = %s AND topic_key = %s", (league, kind, key or game_id))
+    if row:
+        web_data.tag_article(conn, row[0]["id"])
     return status, slug
 
 
@@ -1217,6 +1220,7 @@ def regenerate(conn, a):
          json.dumps({"problems": problems, "attempts": attempts, "regenerated": True, "note": a["regen_note"],
                      "usage": dict(LAST_USAGE)}),
          writer_model(), slug, a["id"]))
+    web_data.tag_article(conn, a["id"])
     print(f"[newsroom] regenerated {a['league']} {a['kind']} #{a['id']} ({time.time() - t:.0f}s) "
           f"{problems or 'checks passed'}", flush=True)
 
@@ -1255,9 +1259,18 @@ def main():
     ap.add_argument("--force", action="store_true", help="editorial: write even if this week's exists")
     ap.add_argument("--show-facts", action="store_true", help="dry run: print the fact sheet too")
     ap.add_argument("--watch", action="store_true", help="run the worker that rewrites articles queued from /admin")
+    ap.add_argument("--retag", action="store_true", help="rewrite every article's team tags (article_teams)")
     args = ap.parse_args()
     if args.watch:
         watch()
+        return 0
+    if args.retag:
+        with connect() as conn:
+            init_db(conn)
+            ids = [r["id"] for r in rows(conn, "SELECT id FROM articles ORDER BY id")]
+            for i in ids:
+                web_data.tag_article(conn, i)
+            print(f"[newsroom] retagged {len(ids)} articles", flush=True)
         return 0
     kinds = args.kind or ["recap", "preview", "ratings"]
     leagues = args.league or ["nfl", "cfb"]

@@ -510,3 +510,15 @@ figure.chart figcaption { margin-top: 6px; }
 .danger-zone { margin-top: 16px; }
 .danger-zone .danger { font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--miss);
   background: transparent; color: var(--miss); cursor: pointer; }
+
+/* Team tags on stories */
+.team-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
+.team-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 6px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 13px; font-weight: 600; }
+.team-tag:hover { border-color: var(--accent); text-decoration: none; }
+.team-tag.mentioned { color: var(--muted); font-weight: 500; }
+.team-tag img { width: 18px; height: 18px; object-fit: contain; }
+.article-body a.team-mention { color: inherit; text-decoration: underline; text-decoration-color: var(--line);
+  text-underline-offset: 3px; }
+.article-body a.team-mention:hover { text-decoration-color: var(--accent); color: var(--accent); }
+.story.external strong::after { content: " ↗"; color: var(--muted); font-weight: 400; }

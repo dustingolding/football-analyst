@@ -18,12 +18,25 @@ PASSWORD = os.getenv("NEWSROOM_PASSWORD", "")
 LEAGUES = {"nfl": "NFL", "cfb": "College Football"}
 
 
-def render_body(text):
-    """Article body (plain paragraphs, optional **bold**) as safe HTML. Model output is never trusted as markup."""
+def render_body(text, league=None, tags=None):
+    """Article body (plain paragraphs, optional **bold**) as safe HTML. Model output is never trusted as markup.
+    With tags, the first mention of each tagged team links to its team page."""
     paras = [p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()]
-    html = []
+    linkable = {t["team_id"] for t in (tags or [])}
+    linked, html = set(), []
     for p in paras:
-        safe = str(escape(p)).replace("\n", " ")
+        pieces, pos = [], 0
+        if league and linkable:
+            for m in web_data._alias_pattern(web_data.team_aliases(league)).finditer(p):
+                team = web_data.team_aliases(league).get(m.group(1))
+                if team in linkable and team not in linked:
+                    linked.add(team)
+                    pieces.append(str(escape(p[pos:m.start(1)])))
+                    pieces.append(f'<a class="team-mention" href="{url_for("team_page", league=league, team_id=team)}">'
+                                  f"{escape(m.group(1))}</a>")
+                    pos = m.end(1)
+        pieces.append(str(escape(p[pos:])))
+        safe = "".join(pieces).replace("\n", " ")
         safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
         html.append(f"<p>{safe}</p>")
     return Markup("\n".join(html))
@@ -62,9 +75,10 @@ def render_article(a, review=False):
                           "FROM live_plays WHERE league = %s AND game_id = %s ORDER BY sequence, play_id",
                           (a["league"], a["game_id"]))
             wp = charts.win_probability(plays, g["home_abbr"], g["away_abbr"])
+    tags = web_data.article_team_tags([a["id"]]).get(a["id"], [])
     related = [r for r in web_data.latest_articles(a["league"], 5) if r["id"] != a["id"]][:4]
     return render_template("article.html", a=a, g=g, wp=wp, league=a["league"], league_name=LEAGUES[a["league"]],
-                           related=related, review=review)
+                           related=related, review=review, tags=tags)
 
 
 # --- admin (hidden; not linked anywhere) --------------------------------------------------------------------------
