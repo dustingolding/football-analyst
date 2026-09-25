@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}SidelineWire{% endblock %} · SidelineWire Dev</title>
+  <title>{% block title %}SidelineWire{% endblock %} · SidelineWire{{ ' Dev' if site_env != 'prod' }}</title>
+  {% if site_env != 'prod' %}<meta name="robots" content="noindex, nofollow">{% endif %}
   <meta name="description" content="Win probabilities, projections and ratings for the NFL and college football.">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='images/favicon-32.png') }}">
   <link rel="icon" type="image/png" sizes="128x128" href="{{ url_for('static', filename='images/favicon.png') }}">
@@ -55,7 +56,7 @@
     <div class="wrap header-row">
       <a class="brand" href="{{ url_for('home') }}" aria-label="SidelineWire home">
         <span class="brand-mark"><img src="{{ url_for('static', filename='images/logo-header.png') }}" alt="" width="88" height="32"></span>
-        <span class="brand-name">Sideline<span>Wire</span></span> <small>dev</small>
+        <span class="brand-name">Sideline<span>Wire</span></span>{% if site_env != 'prod' %} <small>dev</small>{% endif %}
       </a>
       <nav>
         {% for key, name in leagues.items() %}

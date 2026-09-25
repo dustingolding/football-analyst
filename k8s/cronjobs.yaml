@@ -1,15 +1,15 @@
 # Scheduled pipeline runs (pipeline.py). Times are US Eastern.
 #   refresh-gameday  every 15 min, Thu-Mon 11:00-23:59  (game windows)
 #   refresh-hourly   hourly, every day                  (lines/schedules the rest of the time)
-#   daily            04:30 daily                        (play-by-play/EPA, box scores, rosters, polls)
-#   weekly           Tue 05:30                          (daily + retrain after Monday night)
+#   daily            ${DAILY_SCHEDULE} (cron)            (play-by-play/EPA, box scores, rosters, polls)
+#   weekly           ${WEEKLY_SCHEDULE} (cron)            (daily + retrain after Monday night)
 # Overlaps are handled in pipeline.py with a Postgres advisory lock (refresh skips, others wait).
-# data/ and models/ are the repo folders on this node, shared with manual runs.
+# data/ and models/ are the checkout's folders on this node (APP_DIR), shared with manual runs.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: refresh-gameday
-  namespace: football-analyst
+  namespace: ${NAMESPACE}
 spec:
   schedule: "*/15 11-23 * * 4,5,6,0,1"
   timeZone: America/New_York
@@ -32,7 +32,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260925-001335
+              image: ${PIPELINE_IMAGE}
               imagePullPolicy: Never
               args: ["refresh"]
               envFrom:
@@ -46,15 +46,15 @@ spec:
                 - {name: models, mountPath: /app/models}
           volumes:
             - name: data
-              hostPath: {path: /home/dustin/football-analyst/data, type: Directory}
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
             - name: models
-              hostPath: {path: /home/dustin/football-analyst/models, type: Directory}
+              hostPath: {path: ${APP_DIR}/models, type: Directory}
 ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: refresh-hourly
-  namespace: football-analyst
+  namespace: ${NAMESPACE}
 spec:
   schedule: "5 * * * *"
   timeZone: America/New_York
@@ -77,7 +77,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260925-001335
+              image: ${PIPELINE_IMAGE}
               imagePullPolicy: Never
               args: ["refresh"]
               envFrom:
@@ -91,17 +91,17 @@ spec:
                 - {name: models, mountPath: /app/models}
           volumes:
             - name: data
-              hostPath: {path: /home/dustin/football-analyst/data, type: Directory}
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
             - name: models
-              hostPath: {path: /home/dustin/football-analyst/models, type: Directory}
+              hostPath: {path: ${APP_DIR}/models, type: Directory}
 ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: daily
-  namespace: football-analyst
+  namespace: ${NAMESPACE}
 spec:
-  schedule: "30 4 * * *"
+  schedule: "${DAILY_SCHEDULE}"
   timeZone: America/New_York
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 3600
@@ -122,7 +122,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260925-001335
+              image: ${PIPELINE_IMAGE}
               imagePullPolicy: Never
               args: ["daily"]
               envFrom:
@@ -136,17 +136,17 @@ spec:
                 - {name: models, mountPath: /app/models}
           volumes:
             - name: data
-              hostPath: {path: /home/dustin/football-analyst/data, type: Directory}
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
             - name: models
-              hostPath: {path: /home/dustin/football-analyst/models, type: Directory}
+              hostPath: {path: ${APP_DIR}/models, type: Directory}
 ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: weekly
-  namespace: football-analyst
+  namespace: ${NAMESPACE}
 spec:
-  schedule: "30 5 * * 2"
+  schedule: "${WEEKLY_SCHEDULE}"
   timeZone: America/New_York
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 3600
@@ -167,7 +167,7 @@ spec:
             runAsGroup: 1000
           containers:
             - name: pipeline
-              image: football-analyst-pipeline:20260925-001335
+              image: ${PIPELINE_IMAGE}
               imagePullPolicy: Never
               args: ["weekly"]
               envFrom:
@@ -181,6 +181,6 @@ spec:
                 - {name: models, mountPath: /app/models}
           volumes:
             - name: data
-              hostPath: {path: /home/dustin/football-analyst/data, type: Directory}
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
             - name: models
-              hostPath: {path: /home/dustin/football-analyst/models, type: Directory}
+              hostPath: {path: ${APP_DIR}/models, type: Directory}

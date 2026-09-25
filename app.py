@@ -21,6 +21,15 @@ import web_data
 from database import closing_lines, connect
 
 app = Flask(__name__)
+SITE_ENV = os.getenv("SITE_ENV", "dev")  # "prod" on sidelinewire.com; anything else is a dev/test site
+
+
+@app.after_request
+def no_index_outside_prod(response):
+    """Keep dev.sidelinewire.com (and local runs) out of search results."""
+    if SITE_ENV != "prod":
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 
 @app.url_defaults
@@ -725,4 +734,4 @@ def ticker_time(value):
 
 @app.context_processor
 def inject_globals():
-    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker}
+    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV}

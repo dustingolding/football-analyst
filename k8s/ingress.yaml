@@ -1,20 +1,20 @@
-# NPM terminates public HTTPS for dev.sidelinewire.com and forwards https -> 192.168.10.9:8040,
-# Traefik's "dev" entrypoint (see traefik-config.yaml).
+# NPM terminates public HTTPS for the site and forwards https -> 192.168.10.9:<port>, one Traefik
+# entrypoint per environment (see traefik-config.yaml): dev -> :8040, prod -> :8042.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: web
-  namespace: football-analyst
+  namespace: ${NAMESPACE}
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: dev
+    traefik.ingress.kubernetes.io/router.entrypoints: ${ENTRYPOINT}
     traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: traefik
   tls:
     - hosts:
-        - dev.sidelinewire.com
+        - ${SITE_HOST}
   rules:
-    - host: dev.sidelinewire.com
+    - host: ${SITE_HOST}
       http:
         paths:
           - path: /

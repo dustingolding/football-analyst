@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: live
-  namespace: football-analyst
+  namespace: ${NAMESPACE}
 spec:
   replicas: 1
   strategy:
@@ -22,7 +22,7 @@ spec:
         runAsGroup: 1000
       containers:
         - name: live
-          image: football-analyst-pipeline:20260925-001335
+          image: ${PIPELINE_IMAGE}
           imagePullPolicy: Never
           command: ["python", "-u", "live.py"]
           envFrom:
