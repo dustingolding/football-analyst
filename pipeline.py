@@ -52,7 +52,7 @@ def steps(stage):
     finish = {
         "refresh": [("predict upcoming", ["predict.py"])],
         "daily": [("predict upcoming", ["predict.py"])],
-        "weekly": [("retrain models", ["train.py"])],
+        "weekly": [("retrain models", ["train.py"]), ("model explainers", ["explain.py"])],
     }[stage]
     return ingest + (daily if stage in ("daily", "weekly") else []) + model + finish
 

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
 
+import charts
 import web_data
 from database import closing_lines, connect
 
@@ -241,25 +242,11 @@ def live_panel_context(league, g):
         "SELECT play_id, sequence, drive, period, clock, team_id, play_type, text, home_score, away_score, scoring, "
         "home_win_prob FROM live_plays WHERE league = %s AND game_id = %s ORDER BY sequence, play_id",
         (league, g["game_id"]))
-    series = [p["home_win_prob"] for p in plays if p["home_win_prob"] is not None]
-    points = ""
-    if len(series) >= 2:
-        # x = game time elapsed (0-60 min, stretched for overtime), so the line fills in as the game goes.
-        def elapsed(p):
-            try:
-                minutes, seconds = (p["clock"] or "0:00").split(":")
-                left = int(minutes) * 60 + int(float(seconds))
-            except ValueError:
-                left = 0
-            return (min(p["period"] or 1, 5) - 1) * 900 + (900 - min(left, 900))
-        timed = [(elapsed(p), p["home_win_prob"]) for p in plays if p["home_win_prob"] is not None]
-        span = max(3600, max(t for t, _ in timed))
-        w, h = 600, 120
-        points = " ".join(f"{t * w / span:.1f},{(1 - v) * h:.1f}" for t, v in timed)
+    wp = charts.win_probability(plays, g["home_abbr"], g["away_abbr"])
     team_abbr = {g["home_team_id"]: g["home_abbr"], g["away_team_id"]: g["away_abbr"]}
     for p in plays:
         p["team_abbr"] = team_abbr.get(p["team_id"], "")
-    return {"plays": list(reversed(plays))[:80], "wp_points": points, "wp_last": series[-1] if series else None,
+    return {"plays": list(reversed(plays))[:80], "wp": wp,
             "live": g.get("live")}
 
 
@@ -582,6 +569,7 @@ def team_page(league, team_id):
                    else web_data.nfl_moves(season, team_id)[:2]) if tab == "offseason" else ([], []),
         draft=web_data.nfl_moves(season, team_id)[2] if tab == "offseason" and league == "nfl" else [],
         labels=GROUP_LABELS[league],
+        elo_chart=charts.elo_history(league, team_id, season) if tab == "home" else None,
     )
 
 
@@ -766,7 +754,23 @@ def compute_metrics():
         vegas = score(lambda gid: (lines[gid]["home_prob"], -lines[gid]["spread"], lines[gid]["total"]))
         vegas["ats"] = None
         rows.append(("Vegas closing line", "Median across sportsbooks; the benchmark.", vegas))
-        out[league] = {"games": len(common), "rows": rows}
+
+        def calibration(get):  # 10-point bins of predicted home win probability -> actual home win rate
+            bins = [[0, 0, 0.0] for _ in range(10)]
+            for gid in common:
+                prob = get(gid)
+                if prob is None or games[gid]["margin"] == 0:
+                    continue
+                b = bins[min(int(prob * 10), 9)]
+                b[0] += 1
+                b[1] += games[gid]["margin"] > 0
+                b[2] += prob
+            return [{"bin": i, "n": n, "actual": w / n, "predicted": p / n} for i, (n, w, p) in enumerate(bins) if n >= 15]
+
+        calib = [(MODEL_LABELS[m], calibration(lambda gid, p=preds[m]: p[gid]["home_win_prob"]))
+                 for m in (INDEPENDENT_MODEL[league], "xgb_market") if m in preds]
+        calib.append(("Vegas", calibration(lambda gid: lines[gid]["home_prob"])))
+        out[league] = {"games": len(common), "rows": rows, "calibration": calib}
     _metrics_cache.update(at=time.time(), data=out)
     return out
 
@@ -775,6 +779,34 @@ def compute_metrics():
 def models():
     return render_template("models.html", metrics=compute_metrics(), leagues=LEAGUES,
                            first_season=TEST_FIRST_SEASON)
+
+
+@app.route("/how-it-works")
+def how_it_works():
+    """Explainer: Elo, EPA, the models, preseason ratings and how well it all works, with charts."""
+    metrics = compute_metrics()
+    leagues = {}
+    for league in LEAGUES:
+        params = query("SELECT details->'params' AS p, (details->>'margin_per_elo')::float AS m FROM predictions "
+                       "WHERE league = %s AND model = 'elo' ORDER BY created_at DESC LIMIT 1", (league,))
+        season = web_data.seasons(league)[0]
+        top = next((t for t in web_data.power_ratings(league, season).values() if t.get("rank") == 1), None)
+        preseason = web_data.preseason_table(league, season)
+        pre_top = max(preseason, key=lambda r: r["rating"]) if preseason else None
+        rows = {label: m for label, _, m in metrics[league]["rows"]}
+        leagues[league] = {
+            "name": LEAGUES[league], "elo": params[0] if params else None, "season": season,
+            "independent": MODEL_LABELS[INDEPENDENT_MODEL[league]],
+            "scores": {k: rows.get(v) for k, v in (("elo", "Elo"), ("ind", MODEL_LABELS[INDEPENDENT_MODEL[league]]),
+                                                   ("market", "Market-adjusted"), ("vegas", "Vegas closing line"))},
+            "games": metrics[league]["games"],
+            "top": top and {**top, "team": web_data.teams(league).get(top["team_id"])},
+            "elo_chart": charts.elo_history(league, top["team_id"], season) if top else None,
+            "pre_top": pre_top,
+            "families": charts.model_families(league),
+            "calibration": charts.calibration(metrics[league]["calibration"]),
+        }
+    return render_template("how_it_works.html", data=leagues, first_season=TEST_FIRST_SEASON)
 
 
 _ticker_cache = {"at": 0.0, "data": None}
@@ -840,7 +872,8 @@ def not_found(err):
 
 @app.context_processor
 def inject_globals():
-    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV}
+    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV,
+            "contributions_chart": charts.contributions, "calibration_chart": charts.calibration}
 
 
 # The JSON API for apps (/api/v1); registered last because api.py imports this module.

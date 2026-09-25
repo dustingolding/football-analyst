@@ -14,6 +14,7 @@
   <meta property="og:image" content="{{ url_for('static', filename='images/sideline-wire-logo.png', _external=True, _scheme='https') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="{{ url_for('static', filename='live.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='charts.js') }}" defer></script>
 </head>
 <body>
   {% set ticker_blocks = ticker() %}
@@ -63,6 +64,7 @@
           <a href="{{ url_for('league_home', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
         {% endfor %}
         <a href="{{ url_for('models') }}" class="{{ 'active' if request.endpoint == 'models' }}">Models</a>
+        <a href="{{ url_for('how_it_works') }}" class="{{ 'active' if request.endpoint == 'how_it_works' }}">How it works</a>
       </nav>
     </div>
     {% if league %}

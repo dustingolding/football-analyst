@@ -328,3 +328,63 @@ table.compact td, table.compact th, table.stats-table td { white-space: nowrap; 
 .story strong { font-size: 16px; line-height: 1.3; }
 .story-kind { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
 @media (max-width: 960px) { .league-grid { grid-template-columns: 1fr; } }
+
+/* Charts (static/charts.js). Series colors: validated palette, light and dark steps. */
+:root {
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-neg: #e34948;
+  --chart-grid: #eceef2; --chart-axis: #c9ced6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-neg: #e66767;
+    --chart-grid: #222b38; --chart-axis: #354154; }
+}
+figure.chart { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 14px 10px; }
+figure.chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chart-plot { position: relative; min-height: 40px; }
+.chart-plot svg { display: block; overflow: visible; }
+figure.chart figcaption { margin-top: 6px; }
+.ch-tick { font-size: 11.5px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.ch-note { font-size: 11.5px; fill: var(--muted); }
+.ch-label { font-size: 13px; fill: var(--text); }
+.ch-value { font-size: 12.5px; font-weight: 700; fill: var(--text); }
+.ch-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.ch-base { stroke: var(--chart-axis); stroke-width: 1; }
+.ch-ref { stroke: var(--chart-axis); stroke-width: 1; }
+.ch-cross { stroke: var(--muted); stroke-width: 1; }
+.ch-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.ch-area { stroke: none; opacity: 0.1; }
+.ch-dot { stroke: var(--panel); stroke-width: 2; }
+.ch-line.s1 { stroke: var(--series-1); } .ch-line.s2 { stroke: var(--series-2); } .ch-line.s3 { stroke: var(--series-3); }
+.ch-dot.s1, .ch-area.s1 { fill: var(--series-1); } .ch-dot.s2, .ch-area.s2 { fill: var(--series-2); } .ch-dot.s3, .ch-area.s3 { fill: var(--series-3); }
+.ch-bar.pos { fill: var(--series-1); } .ch-bar.neg { fill: var(--series-neg); }
+.ch-bar-row { outline: none; }
+.ch-bar-row:hover .ch-bar, .ch-bar-row:focus .ch-bar { opacity: 0.8; }
+.ch-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; margin-bottom: 8px; color: var(--text); }
+.ch-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ch-key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; background: var(--muted); flex: none; }
+.ch-legend .ch-key { height: 3px; }
+.ch-key.s1 { background: var(--series-1); } .ch-key.s2 { background: var(--series-2); } .ch-key.s3 { background: var(--series-3); }
+.ch-tip { position: absolute; z-index: 3; pointer-events: none; max-width: 280px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14); }
+.ch-tip-title { color: var(--muted); margin-bottom: 3px; }
+.ch-tip-row { display: flex; align-items: baseline; gap: 6px; }
+.ch-tip-row .ch-key { align-self: center; }
+.chart-table { margin-top: 8px; font-size: 13px; }
+.chart-table summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.chart-table .table-scroll { margin-top: 8px; max-height: 320px; overflow-y: auto; }
+.chart-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.chart-head { margin: 18px 0 8px; font-size: 15px; }
+
+/* Explainer / article prose */
+.explainer { max-width: 760px; margin: 0 auto; }
+.explainer p, .explainer li { font-size: 16.5px; line-height: 1.6; }
+.explainer h2 { margin-top: 36px; font-size: 21px; }
+.explainer figure.chart { margin: 14px 0; }
+.explainer .chart-grid-2 figure.chart { margin: 0; }
+.explainer-head { margin-bottom: 18px; }
+.explainer-head h1 { font-size: 34px; line-height: 1.15; }
+.kicker { margin: 0 0 6px; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+.dek { font-size: 18px !important; color: var(--muted); margin: 8px 0 0; }
+.facts { padding-left: 20px; }
+.facts li { margin-bottom: 6px; }
+.chart-sub { margin: 0 0 6px; font-weight: 700; }

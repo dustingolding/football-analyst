@@ -343,6 +343,15 @@ CREATE TABLE IF NOT EXISTS game_features (
     PRIMARY KEY (league, game_id)
 );
 
+-- Explainer data written by explain.py after training (feature-family importance, ...).
+CREATE TABLE IF NOT EXISTS model_explain (
+    league      TEXT        NOT NULL,
+    model       TEXT        NOT NULL,
+    data        JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, model)
+);
+
 -- Pre-game predictions written by batch jobs (elo.py, ...); the web app only reads these.
 CREATE TABLE IF NOT EXISTS predictions (
     league            TEXT        NOT NULL,

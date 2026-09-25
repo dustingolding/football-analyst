@@ -81,7 +81,7 @@
     if (!panel) return;
     fetch(panel.dataset.livePanel, {cache: "no-store"})
       .then(function (r) { return r.ok ? r.text() : null; })
-      .then(function (html) { if (html !== null) panel.innerHTML = html; })
+      .then(function (html) { if (html !== null) { panel.innerHTML = html; if (window.renderCharts) window.renderCharts(panel); } })
       .catch(function () {})
       .then(done || function () {});
   }

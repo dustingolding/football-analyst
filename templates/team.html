@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_charts.html" import chart %}
 {% from "_macros.html" import team_link, season_picker, stat %}
 {% from "_contrib.html" import contrib %}
 {% block title %}{{ team.display_name }} {{ season }}{% endblock %}
@@ -46,6 +47,11 @@
         <div>Win probability: <strong>{{ upcoming.team_win_prob|pct }}</strong>
           {% if upcoming.proj_home is defined %} · Projected {{ (upcoming.proj_home if upcoming.is_home else upcoming.proj_away)|round|int }}-{{ (upcoming.proj_away if upcoming.is_home else upcoming.proj_home)|round|int }}{% endif %}</div>
       </a>
+      {% endif %}
+
+      {% if elo_chart %}
+      <h2>Elo rating</h2>
+      {{ chart(elo_chart, team.display_name ~ ' Elo rating by game', 'Rating going into each game of ' ~ (season - 1) ~ ' and ' ~ season ~ '. Ratings regress toward the mean between seasons.') }}
       {% endif %}
 
       {% if recent %}
@@ -158,11 +164,8 @@
       <div class="card"><span>This season so far</span><strong>{{ '%+.1f'|format(preseason.actual) if preseason.actual is not none else '–' }}</strong><small class="muted">actual rating</small></div>
     </div>
     <h2>Where the rating comes from</h2>
-    <div class="panel contrib-list">
-      {% for g, label in [('history', ('Program' if league == 'cfb' else 'Team') ~ ' history (last two seasons, efficiency)'), ('recruiting', 'Recruiting and talent' if league == 'cfb' else 'Draft'), ('returning', 'Returning production'), ('transfers', 'Transfer portal' if league == 'cfb' else 'Free agency and trades'), ('coaching', 'Coaching change')] %}
-        <div><span>{{ label }}</span>{{ contrib(preseason.contributions.get(g, 0)) }}</div>
-      {% endfor %}
-    </div>
+    {% set contrib_chart = contributions_chart(league, preseason.contributions) %}
+    {% if contrib_chart %}{{ chart(contrib_chart, 'Preseason rating by source', 'History covers the last two seasons of efficiency.') }}{% endif %}
     <p class="muted small">Points versus an average {{ 'FBS' if league == 'cfb' else 'NFL' }} team. See the <a href="{{ url_for('preseason_page', league=league, season=season) }}">{{ season }} preseason ratings</a> for every team.</p>
   {% endif %}
   {% set incoming, outgoing = transfers %}
