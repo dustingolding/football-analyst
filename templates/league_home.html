@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% from "_cards.html" import game_card %}
+{% block title %}{{ league_name }}{% endblock %}
+{% block content %}
+<section class="home-hero league-hero">
+  <div>
+    <h1>{{ league_name }}</h1>
+    <p class="muted">{{ season }} · {{ 'Postseason' if season_type == 3 else 'Week ' ~ week }} ·
+      <a href="{{ url_for('slate', league=league) }}">all games</a> ·
+      <a href="{{ url_for('standings_page', league=league) }}">standings</a> ·
+      <a href="{{ url_for('stats_page', league=league) }}">stats</a></p>
+  </div>
+  <div class="hero-stats">
+    {% if record.picks[1] %}<div><strong>{{ record.picks[0] }}-{{ record.picks[1] - record.picks[0] }}</strong><span>winners picked in {{ record.season }}</span></div>{% endif %}
+    {% if record.ats[1] %}<div><strong>{{ record.ats[0] }}-{{ record.ats[1] - record.ats[0] }}</strong><span>{{ independent }} vs the spread</span></div>{% endif %}
+  </div>
+</section>
+
+{% if live %}
+<section>
+  <div class="section-head"><h2><span class="live-dot">LIVE</span> Now</h2></div>
+  <div class="card-grid">{% for g in live %}{{ game_card(league, g) }}{% endfor %}</div>
+</section>
+{% endif %}
+
+<div class="league-grid">
+  <div class="league-main">
+    <section>
+      <div class="section-head">
+        <h2>{{ 'This week' if league == 'nfl' else 'Top 25 matchups' }}</h2>
+        <a href="{{ url_for('slate', league=league) }}">All games →</a>
+      </div>
+      <div class="card-grid">
+        {% for g in games if g.state != 'in' %}{{ game_card(league, g) }}{% else %}<p class="muted">No games in the next week.</p>{% endfor %}
+      </div>
+    </section>
+
+    {% if stories %}
+    <section>
+      <div class="section-head"><h2>Latest</h2><a href="{{ url_for('articles_page', league=league) }}">All stories →</a></div>
+      <div class="story-list">
+        {% for a in stories %}
+          <a class="story" href="{{ url_for('article_page', league=league, slug=a.slug) }}">
+            <span class="story-kind">{{ a.kind_label }}</span>
+            <strong>{{ a.headline }}</strong>
+            {% if a.dek %}<span class="muted">{{ a.dek }}</span>{% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if edges %}
+    <section>
+      <div class="section-head"><h2>Where our model disagrees with Vegas</h2><a href="{{ url_for('models') }}">How the models do →</a></div>
+      <div class="edge-grid">
+        {% for g in edges %}
+          <a class="panel edge" href="{{ url_for('game', league=league, game_id=g.game_id) }}">
+            <span class="edge-head"><span class="muted small">{{ g.start_time|kickoff }}</span><span class="edge-size">{{ g.edge|abs|num }} pts</span></span>
+            <strong>{{ g.away_short or g.away_abbr }} @ {{ g.home_short or g.home_abbr }}</strong>
+            <span>Vegas {{ g.spread_text }} · our model leans <b>{{ g.lean }}</b></span>
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section>
+      <div class="section-head"><h2>Leaders</h2><a href="{{ url_for('stats_page', league=league) }}">All stats →</a></div>
+      <div class="board-grid">
+        {% for board in boards %}
+          <section class="panel board">
+            <h3>{{ board.title }}</h3>
+            <ol>{% for r in board.rows %}<li><span class="who">{{ r.name }} <small class="muted">{{ r.team.abbreviation if r.team else '' }}</small></span><strong>{{ r.value }}</strong></li>{% else %}<li class="muted">No data yet</li>{% endfor %}</ol>
+          </section>
+        {% endfor %}
+      </div>
+    </section>
+
+    {% if result %}
+    <section>
+      <div class="section-head"><h2>Last week</h2><a href="{{ url_for('slate', league=league, season=result.season, type=result.season_type, week=result.week) }}">Week {{ result.week }} results →</a></div>
+      <div class="panel">
+        <div class="result-line">
+          <div><strong>{{ result.picks[0] }}-{{ result.picks[1] - result.picks[0] }}</strong><span class="muted small">winners picked</span></div>
+          <div><strong>{{ result.ats[0] }}-{{ result.ats[1] - result.ats[0] }}</strong><span class="muted small">leans vs the spread</span></div>
+        </div>
+        {% if result.upsets %}
+          <h3>Biggest upsets</h3>
+          <ul class="plain">
+            {% for g in result.upsets %}
+              <li><a href="{{ url_for('game', league=league, game_id=g.game_id) }}"><strong>{{ g.home_short if g.winner_home else g.away_short }}</strong>
+                {{ g.home_score if g.winner_home else g.away_score }}-{{ g.away_score if g.winner_home else g.home_score }} over {{ g.away_short if g.winner_home else g.home_short }}</a>
+                <span class="muted small">· had a {{ (g.win_prob if g.winner_home else 1 - g.win_prob)|pct }} chance</span></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+  </div>
+
+  <aside class="league-side">
+    <section>
+      <div class="section-head"><h2>Power ratings</h2><a href="{{ url_for('ratings', league=league) }}">All →</a></div>
+      <div class="table-scroll"><table class="compact"><tbody>
+        {% for t in power %}<tr><td class="muted">{{ t.rank }}</td><td class="nowrap">{{ team_link(league, t.team_id, t.team, short=True) }}</td><td class="muted">{{ t.record }}</td><td><strong>{{ t.elo|num(0) }}</strong></td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    {% if ap %}
+    <section>
+      <div class="section-head"><h2>AP Top 10</h2><a href="{{ url_for('rankings_page', league=league) }}">All polls →</a></div>
+      <div class="table-scroll"><table class="compact"><tbody>
+        {% for r in ap %}<tr><td><strong>{{ r.rank }}</strong></td><td class="nowrap">{{ team_link(league, r.team_id, r.team, short=True) }}</td><td class="muted">{{ r.record or '' }}</td>
+          <td class="nowrap">{% if r.movement %}<span class="move {{ 'up' if r.movement > 0 else 'down' }}">{{ '▲' if r.movement > 0 else '▼' }}{{ r.movement|abs }}</span>{% endif %}</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+    {% endif %}
+
+    <section>
+      <div class="section-head"><h2>{{ 'Division leaders' if league == 'nfl' else 'Conference leaders' }}</h2><a href="{{ url_for('standings_page', league=league) }}">Standings →</a></div>
+      <div class="table-scroll"><table class="compact"><tbody>
+        {% for name, teams in leaders_by_group %}{% for t in teams %}
+          <tr><td class="muted small">{{ name if loop.first else '' }}</td><td class="nowrap">{{ team_link(league, t.team_id, t.team, short=True) }}</td>
+            <td>{{ t.overall }}</td>{% if league == 'cfb' %}<td class="muted">{{ t.conf }}</td>{% endif %}</tr>
+        {% endfor %}{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    {% if outlook %}
+    <section>
+      <div class="section-head"><h2>{{ 'Chance of a top-10 season' if league == 'cfb' else 'Beating expectations' }}</h2><a href="{{ url_for('preseason_page', league=league) }}">Preseason →</a></div>
+      <div class="table-scroll"><table class="compact"><tbody>
+        {% for r in outlook %}<tr><td class="nowrap">{{ team_link(league, r.team_id, r.team, short=True) }}</td>
+          <td><strong>{% if league == 'cfb' %}{{ (r.elite_prob * 100)|round|int }}%{% else %}{{ '%+.1f'|format(r.actual - r.rating) }}{% endif %}</strong></td></tr>{% endfor %}
+      </tbody></table></div>
+      {% if league == 'nfl' %}<p class="muted small">Points per game above the preseason projection so far.</p>{% endif %}
+    </section>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

@@ -21,7 +21,7 @@
   <div class="ticker" aria-label="Scoreboard">
     <div class="ticker-track">
       {% for block in ticker_blocks %}
-        <a class="tk-league" href="{{ url_for('slate', league=block.league) }}">{{ block.label }}</a>
+        <a class="tk-league" href="{{ url_for('league_home', league=block.league) }}">{{ block.label }}</a>
         {% for g in block.games %}
           <a class="tk-game tk-{{ g.ui_state }}" href="{{ url_for('game', league=block.league, game_id=g.game_id) }}"
              data-live-game="{{ g.game_id }}" data-league="{{ block.league }}" data-state="{{ g.ui_state }}"
@@ -60,7 +60,7 @@
       </a>
       <nav>
         {% for key, name in leagues.items() %}
-          <a href="{{ url_for('slate', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
+          <a href="{{ url_for('league_home', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
         {% endfor %}
         <a href="{{ url_for('models') }}" class="{{ 'active' if request.endpoint == 'models' }}">Models</a>
       </nav>
@@ -68,7 +68,7 @@
     {% if league %}
     <div class="subnav">
       <div class="wrap">
-        {% set items = [('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
+        {% set items = [('league_home', 'Home'), ('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
              + ([('rankings_page', 'Rankings')] if league == 'cfb' else []) + [('preseason_page', 'Preseason')]
              + [('stats_page', 'Stats'), ('ratings', 'Ratings')] %}
         {% for endpoint, label in items %}

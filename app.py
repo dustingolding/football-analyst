@@ -300,9 +300,12 @@ def upcoming_games(league, days=8):
 
 
 def last_week_results(league):
-    """The most recent week with completed games: its games (with predictions) and our record."""
-    row = query("SELECT season, season_type, week FROM games WHERE league = %s AND completed "
-                "AND start_time < now() ORDER BY start_time DESC LIMIT 1", (league,))
+    """The most recent fully finished week: its games (with predictions) and our record."""
+    row = query("SELECT season, season_type, week FROM games g WHERE league = %s AND completed "
+                "AND start_time < now() AND NOT EXISTS (SELECT 1 FROM games o WHERE o.league = g.league "
+                "AND o.season = g.season AND o.season_type = g.season_type AND o.week = g.week AND NOT o.completed "
+                "AND o.start_time > now() - interval '2 days') "
+                "ORDER BY start_time DESC LIMIT 1", (league,))
     if not row:
         return None
     r = row[0]
@@ -328,46 +331,84 @@ def season_record(league):
     return {"season": season, "picks": (sum(picks), len(picks)), "ats": (sum(leans), len(leans))}
 
 
+def featured_games(league, limit=10):
+    """Upcoming/live games worth featuring (college: games with a ranked team)."""
+    games = upcoming_games(league)
+    if league == "cfb":
+        games = [g for g in games if g["home_rank"] or g["away_rank"] or g["state"] == "in"]
+    return games[:limit]
+
+
+def model_edges(league, limit=3):
+    """Upcoming games where our line-free model disagrees with Vegas most: real matchups (FBS vs
+    FBS in college) with sane spreads; on 30-point lines a big gap is mostly noise."""
+    season = web_data.seasons(league)[0]
+    candidates = [g for g in upcoming_games(league) if g.get("edge") is not None and abs(g["edge"]) >= 3
+                  and abs(g["line"].get("spread") or 99) <= 21
+                  and web_data.is_major(league, g["home_team_id"], season)
+                  and web_data.is_major(league, g["away_team_id"], season)]
+    return sorted(candidates, key=lambda g: -abs(g["edge"]))[:limit]
+
+
+def power_top(league, n=10):
+    season = web_data.seasons(league)[0]
+    team_map, recs = web_data.teams(league), web_data.records(league, season)
+    rows = sorted((t for t in web_data.power_ratings(league, season).values() if t.get("rank")),
+                  key=lambda t: t["rank"])[:n]
+    return [dict(t, team=team_map.get(t["team_id"]), record=(recs.get(t["team_id"]) or {}).get("overall", "0-0"))
+            for t in rows]
+
+
+def ap_top(n=10):
+    season = web_data.seasons("cfb")[0]
+    weeks = web_data.poll_weeks("cfb", season)
+    if not weeks:
+        return []
+    tables = web_data.poll_tables("cfb", season, weeks[0]["season_type"], weeks[0]["week"])
+    return next((t["rows"][:n] for t in tables if t["title"] == "AP Top 25"), [])
+
+
 @app.route("/")
 def home():
-    featured = {}
-    edges = []
-    for league in LEAGUES:
-        games = upcoming_games(league)
-        if league == "cfb":
-            # Games with a ranked team, then the closest remaining FBS matchups by win probability.
-            ranked = [g for g in games if g["home_rank"] or g["away_rank"]]
-            featured[league] = ranked[:10]
-        else:
-            featured[league] = games[:10]
-        # Disagreements worth a look: real matchups (FBS vs FBS in college) with sane spreads;
-        # on 30-point lines a big gap is mostly noise. Top three per league.
-        season = web_data.seasons(league)[0]
-        candidates = [g for g in games if g.get("edge") is not None and abs(g["edge"]) >= 3
-                      and abs(g["line"].get("spread") or 99) <= 21
-                      and web_data.is_major(league, g["home_team_id"], season)
-                      and web_data.is_major(league, g["away_team_id"], season)]
-        candidates.sort(key=lambda g: -abs(g["edge"]))
-        edges += [(league, g) for g in candidates[:3]]
-
-    nfl_season = web_data.seasons("nfl")[0]
-    team_map = web_data.teams("nfl")
-    power = sorted((t for t in web_data.power_ratings("nfl", nfl_season).values() if t.get("rank")),
-                   key=lambda t: t["rank"])[:10]
-    for t in power:
-        t["team"] = team_map.get(t["team_id"])
-        t["record"] = (web_data.records("nfl", nfl_season).get(t["team_id"]) or {}).get("overall", "0-0")
-    cfb_season = web_data.seasons("cfb")[0]
-    weeks = web_data.poll_weeks("cfb", cfb_season)
-    ap = []
-    if weeks:
-        tables = web_data.poll_tables("cfb", cfb_season, weeks[0]["season_type"], weeks[0]["week"])
-        ap = next((t["rows"][:10] for t in tables if t["title"] == "AP Top 25"), [])
-
+    featured = {league: featured_games(league) for league in LEAGUES}
+    edges = [(league, g) for league in LEAGUES for g in model_edges(league)]
     return render_template(
-        "home.html", featured=featured, edges=edges, power=power, ap=ap,
+        "home.html", featured=featured, edges=edges, power=power_top("nfl"), ap=ap_top(),
         results={lg: last_week_results(lg) for lg in LEAGUES}, records={lg: season_record(lg) for lg in LEAGUES},
         independent=INDEPENDENT_MODEL,
+    )
+
+
+@app.route("/<league>/")
+def league_home(league):
+    """League hub: this week's games, latest stories, ratings, standings snapshot, leaders."""
+    league_or_404(league)
+    if request.args.get("week") or request.args.get("season"):  # old slate links
+        return redirect(url_for("slate", league=league, **request.args))
+    season, season_type, week = current_week(league)
+    games = featured_games(league, limit=12)
+    live = [g for g in games if g["state"] == "in"]
+    groups = web_data.standings(league, season)
+    if league == "nfl":
+        leaders_by_group = [(grp["name"], grp["teams"][:1]) for grp in groups]
+    else:
+        big = ["SEC", "Big Ten", "Big 12", "ACC"]
+        leaders_by_group = [(grp["name"], grp["teams"][:2]) for grp in sorted(
+            groups, key=lambda grp: (grp["name"] not in big, big.index(grp["name"]) if grp["name"] in big else 0,
+                                     grp["name"]))]
+    boards = [web_data.player_board(league, season, web_data.find_player_spec(slug), limit=3)
+              for slug in ("passing-yards", "rushing-yards", "receiving-yards", "sacks")]
+    preseason = web_data.preseason_table(league, season) if season in web_data.preseason_seasons(league) else []
+    if league == "cfb":  # chance of a top-10 season
+        outlook = sorted((r for r in preseason if r.get("elite_prob") is not None), key=lambda r: -r["elite_prob"])[:6]
+    else:  # biggest surprises: playing furthest above their preseason projection
+        outlook = sorted((r for r in preseason if r["actual"] is not None), key=lambda r: -(r["actual"] - r["rating"]))[:6]
+    return render_template(
+        "league_home.html", league=league, league_name=LEAGUES[league], season=season, season_type=season_type,
+        week=week, games=games, live=live, edges=model_edges(league), power=power_top(league),
+        ap=ap_top() if league == "cfb" else [], leaders_by_group=leaders_by_group, boards=boards, outlook=outlook,
+        result=last_week_results(league), record=season_record(league), independent=MODEL_LABELS[INDEPENDENT_MODEL[league]],
+        stories=web_data.latest_articles(league, 6) if hasattr(web_data, "latest_articles") else [],
     )
 
 
@@ -377,7 +418,7 @@ def healthz():
     return {"ok": True}
 
 
-@app.route("/<league>/")
+@app.route("/<league>/games")
 def slate(league):
     league_or_404(league)
     season, season_type, week = current_week(league)
