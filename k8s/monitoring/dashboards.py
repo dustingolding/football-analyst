@@ -56,8 +56,9 @@ def panel(kind, title, targets, w=12, h=8, unit=None, desc=None, **extra):
 
 def stat(title, target, unit=None, w=4, h=4, thresholds=None, desc=None, decimals=None):
     defaults = {"color": {"mode": "thresholds"}}
-    if thresholds:
-        defaults["thresholds"] = {"mode": "absolute", "steps": [{"color": c, "value": v} for v, c in thresholds]}
+    # without explicit thresholds, stay neutral (Grafana's default turns anything over 80 red)
+    steps = thresholds or [(None, "green")]
+    defaults["thresholds"] = {"mode": "absolute", "steps": [{"color": c, "value": v} for v, c in steps]}
     if decimals is not None:
         defaults["decimals"] = decimals
     return panel("stat", title, target, w=w, h=h, unit=unit, desc=desc, defaults=defaults,
@@ -69,9 +70,11 @@ def ts(title, targets, unit=None, w=12, h=8, stack=False, bars=False, desc=None)
     custom = {"lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": True}
     if stack:
         custom["stacking"] = {"mode": "normal", "group": "A"}
+    defaults = {"custom": custom}
     if bars:
         custom.update(drawStyle="bars", fillOpacity=80, lineWidth=1)
-    return panel("timeseries", title, targets, w=w, h=h, unit=unit, desc=desc, defaults={"custom": custom},
+        defaults["min"] = 0
+    return panel("timeseries", title, targets, w=w, h=h, unit=unit, desc=desc, defaults=defaults,
                  options={"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}})
 
 
@@ -306,12 +309,14 @@ def models():
         stat("Brier score (lower is better)", sql(MODEL_BASE + "SELECT avg(power(prob - (margin > 0)::int, 2)) AS value FROM g"), decimals=3),
         stat("Avg miss on margin (pts)", sql(MODEL_BASE + "SELECT avg(abs(margin - pm)) AS value FROM g"), decimals=1),
         panel("barchart", "Winners picked by week: model vs Vegas", sql(MODEL_BASE + f"""
-            SELECT week::text AS week, {PICK} AS model, {VEGAS} AS vegas FROM g GROUP BY week ORDER BY week"""),
+            SELECT 'Wk ' || week AS week, {PICK} AS model, {VEGAS} AS vegas FROM g GROUP BY week ORDER BY min(start_time)"""),
               w=12, h=9, unit="percentunit", defaults={"min": 0, "max": 1},
+              overrides=[{"matcher": {"id": "byName", "options": "week"}, "properties": [{"id": "unit", "value": "string"}]}],
               options={"xField": "week", "legend": {"displayMode": "list", "placement": "bottom"}, "barWidth": 0.7}),
         panel("barchart", "Against the spread by week", sql(MODEL_BASE + f"""
-            SELECT week::text AS week, {ATS} AS ats FROM g GROUP BY week ORDER BY week"""),
+            SELECT 'Wk ' || week AS week, {ATS} AS "against the spread" FROM g GROUP BY week ORDER BY min(start_time)"""),
               w=12, h=9, unit="percentunit", defaults={"min": 0, "max": 1},
+              overrides=[{"matcher": {"id": "byName", "options": "week"}, "properties": [{"id": "unit", "value": "string"}]}],
               options={"xField": "week", "legend": {"displayMode": "list", "placement": "bottom"}, "barWidth": 0.7}),
         table("By week", sql(MODEL_BASE + f"""
             SELECT week, count(*) AS games, round(100 * {PICK}, 1) AS "model %", round(100 * {VEGAS}, 1) AS "vegas %",
