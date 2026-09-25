@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS games (
 CREATE INDEX IF NOT EXISTS games_season_idx ON games (league, season, season_type, week);
 CREATE INDEX IF NOT EXISTS games_home_team_idx ON games (league, home_team_id, start_time);
 CREATE INDEX IF NOT EXISTS games_away_team_idx ON games (league, away_team_id, start_time);
+-- TV/streaming networks from the ESPN scoreboard, e.g. "ESPN, ABC" (etl.py).
+ALTER TABLE games ADD COLUMN IF NOT EXISTS broadcast TEXT;
 
 -- Betting lines per game and source, keyed by ESPN game_id. Spreads use the betting
 -- convention from the home team's side: -3.5 means the home team is favored by 3.5.
