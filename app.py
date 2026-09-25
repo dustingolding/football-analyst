@@ -362,7 +362,7 @@ def home():
     return render_template(
         "home.html", featured=featured, edges=edges, power=power_top("nfl"), ap=ap_top(),
         results={lg: last_week_results(lg) for lg in LEAGUES}, records={lg: season_record(lg) for lg in LEAGUES},
-        independent=INDEPENDENT_MODEL,
+        independent=INDEPENDENT_MODEL, stories=web_data.latest_articles(None, 6),
     )
 
 
@@ -395,7 +395,7 @@ def league_home(league):
         week=week, games=games, live=live, edges=model_edges(league), power=power_top(league),
         ap=ap_top() if league == "cfb" else [], leaders_by_group=leaders_by_group, boards=boards, outlook=outlook,
         result=last_week_results(league), record=season_record(league), independent=MODEL_LABELS[INDEPENDENT_MODEL[league]],
-        stories=web_data.latest_articles(league, 6) if hasattr(web_data, "latest_articles") else [],
+        stories=web_data.latest_articles(league, 6),
     )
 
 
@@ -474,6 +474,7 @@ def game(league, game_id):
     models = [(MODEL_LABELS.get(k, k), MODEL_NOTES.get(k, ""), v) for k, v in sorted(
         g["preds"].items(), key=lambda kv: list(MODEL_LABELS).index(kv[0]) if kv[0] in MODEL_LABELS else 99)]
     return render_template("game.html", league=league, league_name=LEAGUES[league], g=g, matchup=matchup,
+                           stories=web_data.game_articles(league, game_id),
                            models=models, books=books, context=f, availability=web_data.game_availability(league, g),
                            **live_panel_context(league, g))
 
@@ -878,4 +879,6 @@ def inject_globals():
 
 # The JSON API for apps (/api/v1); registered last because api.py imports this module.
 from api import bp as api_v1  # noqa: E402
+from newsroom_web import bp as newsroom_bp  # noqa: E402
 app.register_blueprint(api_v1)
+app.register_blueprint(newsroom_bp)

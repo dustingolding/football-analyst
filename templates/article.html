@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_charts.html" import chart %}
+{% from "_cards.html" import game_card %}
+{% block title %}{{ a.headline }}{% endblock %}
+{% block content %}
+{% if review %}<div class="review-banner">Review preview · status: <strong>{{ a.status }}</strong></div>{% endif %}
+<article class="explainer article">
+  <header class="explainer-head">
+    <p class="kicker"><a href="{{ url_for('newsroom_web.articles_page', league=league, kind=a.kind) }}">{{ league_name }} {{ a.kind_label }}</a></p>
+    <h1>{{ a.headline }}</h1>
+    {% if a.dek %}<p class="dek">{{ a.dek }}</p>{% endif %}
+    <p class="byline muted small">SidelineWire Newsroom · {{ (a.published_at or a.created_at)|kickoff }}</p>
+  </header>
+
+  {% if g %}<div class="article-game">{{ game_card(league, g) }}</div>{% endif %}
+
+  <div class="article-body">{{ a.body|article_body }}</div>
+
+  {% if wp %}
+    <h2>How the win probability moved</h2>
+    {{ chart(wp, g.home_abbr ~ ' win probability over the game', g.home_abbr ~ ' win probability after each play (ESPN).') }}
+  {% endif %}
+
+  <aside class="ai-note">
+    <strong>How this story was made.</strong> This {{ a.kind_label|lower }} was written by an AI model running on our own
+    hardware, using only a fact sheet built from our game data{% if a.kind != 'editorial' %} and ESPN's box score{% endif %}.
+    Before publishing, every number and name in it was checked against that fact sheet{% if a.kind == 'editorial' %}, and
+    an editor reviewed it{% endif %}. Spot an error? It's on us. See <a href="{{ url_for('how_it_works') }}">how our models work</a>.
+  </aside>
+
+  {% if g %}<p><a href="{{ url_for('game', league=league, game_id=g.game_id) }}">Full game page: box score, models, sportsbooks →</a></p>{% endif %}
+
+  {% if related %}
+    <h2>More {{ league_name }} stories</h2>
+    <div class="story-list">
+      {% for r in related %}
+        <a class="story" href="{{ url_for('newsroom_web.article_page', league=league, slug=r.slug) }}"><span class="story-kind">{{ r.kind_label }}</span><strong>{{ r.headline }}</strong></a>
+      {% endfor %}
+    </div>
+  {% endif %}
+</article>
+{% endblock %}

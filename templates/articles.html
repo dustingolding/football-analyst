@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ league_name }} news{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }} stories</h1>
+    <p class="muted">Previews, recaps and columns from the SidelineWire newsroom.</p>
+  </div>
+  <nav class="pill-nav">
+    <a href="{{ url_for('newsroom_web.articles_page', league=league) }}" class="{{ 'active' if not kind }}">All</a>
+    {% for k, label in kinds.items() %}<a href="{{ url_for('newsroom_web.articles_page', league=league, kind=k) }}" class="{{ 'active' if kind == k }}">{{ label }}s</a>{% endfor %}
+  </nav>
+</div>
+{% if articles %}
+  <div class="story-list">
+    {% for a in articles %}
+      <a class="story" href="{{ url_for('newsroom_web.article_page', league=league, slug=a.slug) }}">
+        <span class="story-kind">{{ a.kind_label }} · <span class="muted">{{ a.published_at|kickoff }}</span></span>
+        <strong>{{ a.headline }}</strong>
+        {% if a.dek %}<span class="muted">{{ a.dek }}</span>{% endif %}
+      </a>
+    {% endfor %}
+  </div>
+  <p class="pager">{% if page > 1 %}<a href="{{ url_for('newsroom_web.articles_page', league=league, kind=kind, page=page - 1) }}">← Newer</a>{% endif %}
+    {% if more %}<a href="{{ url_for('newsroom_web.articles_page', league=league, kind=kind, page=page + 1) }}">Older →</a>{% endif %}</p>
+{% else %}
+  <p class="muted">No stories yet.</p>
+{% endif %}
+{% endblock %}

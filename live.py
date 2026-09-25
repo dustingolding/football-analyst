@@ -98,7 +98,11 @@ def save_scores(conn, rows):
 
 def plays(client, game_id):
     """All plays so far, with ESPN's win probability after each."""
-    summary = client.get("summary", params={"event": game_id})
+    return plays_from_summary(client.league, game_id, client.get("summary", params={"event": game_id}))
+
+
+def plays_from_summary(league, game_id, summary):
+    """live_plays rows from an ESPN game summary."""
     probability = {w.get("playId"): w.get("homeWinPercentage") for w in summary.get("winprobability") or []}
     drives = summary.get("drives") or {}
     all_drives = list(drives.get("previous") or [])
@@ -110,7 +114,7 @@ def plays(client, game_id):
         for p in drive.get("plays") or []:
             team = ((p.get("start") or {}).get("team") or {}).get("id") or ((drive.get("team") or {}).get("id"))
             rows.append((
-                client.league, game_id, str(p["id"]), num(p.get("sequenceNumber")), drive_number,
+                league, game_id, str(p["id"]), num(p.get("sequenceNumber")), drive_number,
                 (p.get("period") or {}).get("number"), (p.get("clock") or {}).get("displayValue"), team,
                 (p.get("type") or {}).get("text"), p.get("text"), num(p.get("homeScore")), num(p.get("awayScore")),
                 bool(p.get("scoringPlay")), probability.get(str(p["id"])),

@@ -343,6 +343,38 @@ CREATE TABLE IF NOT EXISTS game_features (
     PRIMARY KEY (league, game_id)
 );
 
+-- Newsroom articles (newsroom.py): previews, recaps, editorials. The web app's read-only role may only
+-- change review fields (approve / reject / edit from /newsroom).
+CREATE TABLE IF NOT EXISTS articles (
+    id            BIGSERIAL   PRIMARY KEY,
+    league        TEXT        NOT NULL,
+    kind          TEXT        NOT NULL,          -- preview, recap, editorial
+    game_id       TEXT,
+    topic_key     TEXT        NOT NULL,          -- game_id for game stories, e.g. power-2026-w3 for editorials
+    season        INTEGER,
+    week          INTEGER,
+    slug          TEXT        NOT NULL UNIQUE,
+    headline      TEXT        NOT NULL,
+    dek           TEXT,
+    body          TEXT        NOT NULL,          -- plain paragraphs separated by blank lines
+    facts         JSONB       NOT NULL,          -- the fact sheet the writer was given
+    checks        JSONB,                         -- {"problems": [...], "attempts": n}
+    status        TEXT        NOT NULL,          -- published, review, rejected
+    model         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at  TIMESTAMPTZ,
+    reviewed_at   TIMESTAMPTZ,
+    UNIQUE (league, kind, topic_key)
+);
+CREATE INDEX IF NOT EXISTS articles_list_idx ON articles (league, status, published_at DESC);
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT ON articles TO web_ro;
+        GRANT UPDATE (status, headline, dek, body, updated_at, published_at, reviewed_at) ON articles TO web_ro;
+    END IF;
+END $$;
+
 -- Explainer data written by explain.py after training (feature-family importance, ...).
 CREATE TABLE IF NOT EXISTS model_explain (
     league      TEXT        NOT NULL,

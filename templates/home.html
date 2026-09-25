@@ -35,6 +35,21 @@
   {% endfor %}
 </div>
 
+{% if stories %}
+<section>
+  <div class="section-head"><h2>Latest stories</h2>
+    <span><a href="{{ url_for('newsroom_web.articles_page', league='nfl') }}">NFL</a> · <a href="{{ url_for('newsroom_web.articles_page', league='cfb') }}">College</a></span></div>
+  <div class="story-grid">
+    {% for a in stories %}
+      <a class="story" href="{{ url_for('newsroom_web.article_page', league=a.league, slug=a.slug) }}">
+        <span class="story-kind">{{ a.league|upper }} {{ a.kind_label }}</span><strong>{{ a.headline }}</strong>
+        {% if a.dek %}<span class="muted small">{{ a.dek }}</span>{% endif %}
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {% if edges %}
 <section>
   <div class="section-head">

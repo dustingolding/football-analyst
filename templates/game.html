@@ -3,6 +3,10 @@
 {% block content %}
 <p><a href="{{ url_for('slate', league=league, season=g.season, type=g.season_type, week=g.week) }}">← {{ league_name }} {{ g.season }} week {{ g.week }}</a></p>
 
+{% if stories %}<div class="game-stories">{% for kind in ('recap', 'preview') if kind in stories %}{% set st = stories[kind] %}
+  <a class="story" href="{{ url_for('newsroom_web.article_page', league=league, slug=st.slug) }}"><span class="story-kind">{{ st.kind_label }}</span><strong>{{ st.headline }}</strong></a>
+{% endfor %}</div>{% endif %}
+
 <section class="scoreboard" data-live-game="{{ g.game_id }}" data-league="{{ league }}" data-state="{{ g.state }}" data-kickoff="{{ g.kickoff_ts }}">
   <div class="side">
     {% if g.away_logo %}<img src="{{ g.away_logo }}" alt="">{% endif %}

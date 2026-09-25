@@ -713,3 +713,65 @@ def game_availability(league, g):
     for side in out:
         out[side].sort(key=lambda r: (order.get(r["status"], 9), r["player_name"]))
     return out
+
+
+# --- Newsroom articles (newsroom.py writes; /newsroom reviews) --------------------------------------------------
+
+KIND_LABELS = {"preview": "Preview", "recap": "Recap", "editorial": "Column"}
+ARTICLE_COLS = ("id, league, kind, game_id, season, week, slug, headline, dek, status, model, created_at, "
+                "published_at, updated_at")
+
+
+def _label(rows):
+    for r in rows:
+        r["kind_label"] = KIND_LABELS.get(r["kind"], r["kind"].title())
+    return rows
+
+
+def latest_articles(league=None, n=6, kind=None, offset=0):
+    """Published articles, newest first."""
+    where, params = ["status = 'published'"], []
+    if league:
+        where.append("league = %s")
+        params.append(league)
+    if kind:
+        where.append("kind = %s")
+        params.append(kind)
+    return _label(query(f"SELECT {ARTICLE_COLS} FROM articles WHERE {' AND '.join(where)} "
+                        "ORDER BY published_at DESC, id DESC LIMIT %s OFFSET %s", (*params, n, offset)))
+
+
+def article(slug=None, article_id=None, published_only=True):
+    rows = query(f"SELECT {ARTICLE_COLS}, body, facts, checks, reviewed_at FROM articles WHERE "
+                 + ("slug = %s" if slug else "id = %s") + (" AND status = 'published'" if published_only else ""),
+                 (slug or article_id,))
+    return _label(rows)[0] if rows else None
+
+
+def game_articles(league, game_id):
+    """Published preview/recap for a game: {kind: article}."""
+    return {r["kind"]: r for r in _label(query(
+        f"SELECT {ARTICLE_COLS} FROM articles WHERE league = %s AND game_id = %s AND status = 'published'",
+        (league, game_id)))}
+
+
+def review_queue():
+    return {status: _label(query(f"SELECT {ARTICLE_COLS}, checks FROM articles WHERE status = %s "
+                                 "ORDER BY created_at DESC LIMIT %s", (status, 100 if status == "review" else 40)))
+            for status in ("review", "published", "rejected")}
+
+
+def update_article(article_id, status=None, headline=None, dek=None, body=None):
+    """Review actions from /newsroom (the web role may only touch these columns)."""
+    sets, params = ["updated_at = now()", "reviewed_at = now()"], []
+    for col, val in (("headline", headline), ("dek", dek), ("body", body)):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            params.append(val)
+    if status:
+        sets.append("status = %s")
+        params.append(status)
+        if status == "published":
+            sets.append("published_at = COALESCE(published_at, now())")
+    with connect() as conn:
+        conn.execute(f"UPDATE articles SET {', '.join(sets)} WHERE id = %s", (*params, article_id))

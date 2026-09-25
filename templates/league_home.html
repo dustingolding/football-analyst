@@ -38,10 +38,10 @@
 
     {% if stories %}
     <section>
-      <div class="section-head"><h2>Latest</h2><a href="{{ url_for('articles_page', league=league) }}">All stories →</a></div>
+      <div class="section-head"><h2>Latest</h2><a href="{{ url_for('newsroom_web.articles_page', league=league) }}">All stories →</a></div>
       <div class="story-list">
         {% for a in stories %}
-          <a class="story" href="{{ url_for('article_page', league=league, slug=a.slug) }}">
+          <a class="story" href="{{ url_for('newsroom_web.article_page', league=league, slug=a.slug) }}">
             <span class="story-kind">{{ a.kind_label }}</span>
             <strong>{{ a.headline }}</strong>
             {% if a.dek %}<span class="muted">{{ a.dek }}</span>{% endif %}

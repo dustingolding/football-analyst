@@ -113,6 +113,10 @@ SCHEMAS = {
         "transfers_in": I, "transfers_out": I})]},
     "LeaderBoard": obj({"category": S, "title": S, "entries": arr(obj({
         "name": NS, "position": NS, "team_id": S, "games": I, "value": S}))}),
+    "Article": obj({"id": S, "slug": S, "league": S, "kind": {"type": "string", "enum": ["preview", "recap", "editorial"]},
+                    "game_id": NS, "headline": S, "dek": NS, "published_at": nullable({"type": "string", "format": "date-time"}),
+                    "url": S}),
+    "ArticleDetail": {"allOf": [ref("Article"), obj({"paragraphs": arr(S)})]},
     "ModelMetrics": obj({"model": S, "description": S, "log_loss": NN, "brier": NN, "accuracy": NN, "margin_mae": NN,
                          "total_mae": NN, "ats": NN}),
 }
@@ -171,6 +175,12 @@ SPEC = {
             LEAGUE, SEASON, param("type", schema={"type": "string", "enum": ["player", "team"]}),
             param("group", description="Conference (CFB) or conference/division (NFL)")],
             {"season": NI, "type": S, "group": NS}),
+        "/{league}/articles": get("Published stories, newest first", arr(ref("Article")), [
+            LEAGUE, param("kind", schema={"type": "string", "enum": ["preview", "recap", "editorial"]}),
+            param("limit", schema=I, description="1-50, default 20"), param("offset", schema=I)],
+            description="Written by our AI newsroom from game data and fact-checked before publishing."),
+        "/{league}/articles/{slug}": get("One story, as plain paragraphs", ref("ArticleDetail"),
+                                         [LEAGUE, param("slug", "path")]),
         "/models": get("Model performance on test seasons", {"type": "object", "additionalProperties": obj({
             "games": I, "test_first_season": I, "models": arr(ref("ModelMetrics"))})}),
     },
