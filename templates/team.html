@@ -154,6 +154,7 @@
       <div class="card"><span>Last season</span><strong>{{ '%+.1f'|format(preseason.baseline) }}</strong><small class="muted">change {{ '%+.1f'|format(preseason.change) }}</small></div>
       {% if league == 'cfb' %}<div class="card"><span>Transfers in / out</span><strong>{{ preseason.n_in }} / {{ preseason.n_out }}</strong><small class="muted">transfer portal</small></div>
       {% else %}<div class="card"><span>Draft picks</span><strong>{{ draft|length }}</strong><small class="muted">{% if draft %}first at #{{ draft[0].pick }}{% endif %}</small></div>{% endif %}
+      {% if preseason.elite_prob is not none %}<div class="card"><span>Chance of a top-10 season</span><strong>{{ (preseason.elite_prob * 100)|round|int }}%</strong><small class="muted">elite-season model</small></div>{% endif %}
       <div class="card"><span>This season so far</span><strong>{{ '%+.1f'|format(preseason.actual) if preseason.actual is not none else '–' }}</strong><small class="muted">actual rating</small></div>
     </div>
     <h2>Where the rating comes from</h2>

@@ -578,8 +578,11 @@ GROUP_LABELS = {
 
 def preseason_sorts(league):
     labels = GROUP_LABELS[league]
-    return {"rating": "Preseason rating", "change": "Change from last season", "transfers": labels["transfers"],
-            "returning": "Returning production", "recruiting": labels["recruiting"]}
+    sorts = {"rating": "Preseason rating", "change": "Change from last season", "transfers": labels["transfers"],
+             "returning": "Returning production", "recruiting": labels["recruiting"]}
+    if league == "cfb":
+        sorts["elite"] = "Elite-season odds"
+    return sorts
 
 
 @app.route("/<league>/preseason")
@@ -598,6 +601,8 @@ def preseason_page(league):
     rows = list(web_data.preseason_table(league, season))
     if sort == "change":
         rows.sort(key=lambda r: -(r["change"] or 0))
+    elif sort == "elite":
+        rows.sort(key=lambda r: -(r["elite_prob"] or 0))
     elif sort != "rating":
         rows.sort(key=lambda r: -r["contributions"].get(sort, 0))
     groups = ["history", "recruiting", "returning", "transfers", "coaching"]

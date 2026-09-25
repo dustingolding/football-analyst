@@ -270,9 +270,11 @@ def team_seasons(league, season):
                 if mine and theirs:
                     t["box_games"] += 1
                     for k, v in mine.items():
-                        t["for"][k] += v
+                        if isinstance(v, (int, float)):  # some older box scores have blank stats
+                            t["for"][k] += v
                     for k, v in theirs.items():
-                        t["against"][k] += v
+                        if isinstance(v, (int, float)):
+                            t["against"][k] += v
                     if mine.get("third_att"):
                         t["third"][0] += mine.get("third_conv", 0)
                         t["third"][1] += mine["third_att"]
@@ -576,6 +578,7 @@ def preseason_table(league, season):
             r["change"] = r["rating"] - r["baseline"] if r["baseline"] is not None else None
             r["n_in"] = int(r["features"].get("n_transfers_in") or 0)
             r["n_out"] = int(r["features"].get("n_transfers_out") or 0)
+            r["elite_prob"] = r["features"].get("elite_prob")
         rows.sort(key=lambda r: -r["rating"])
         for i, r in enumerate(rows, 1):
             r["rank"] = i

@@ -40,7 +40,8 @@ def steps(stage):
         ("CFB EPA", ["cfb_epa.py"]),
         ("CFB box scores/rosters/polls", ["cfbd_box.py", *this_season]),
         ("CFB transfers/recruits/coaches", ["cfbd_players.py", "--start", str(int(season) - 1)]),
-        ("CFB preseason ratings", ["offseason.py"]),
+        ("preseason ratings", ["offseason.py"]),
+        ("CFB elite-season odds", ["elite.py", "--write"]),  # after offseason.py, which rewrites team_preseason
     ]
     model = [
         ("Elo", ["elo.py"]),
