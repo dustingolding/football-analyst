@@ -508,6 +508,12 @@ def database_url():
     return f"postgresql://{user}:{password}@{host}:{port}/{db}"
 
 
+# When a team tag (article_teams "at") puts a story (articles "a") in that team's feeds and news alerts: a preview
+# or recap belongs to its two game teams only, so a team named in passing (last week's opponent) doesn't get it;
+# power ratings and columns count for every team they tag or mention.
+TEAM_STORY_SQL = "(at.role = 'game' OR a.kind NOT IN ('preview', 'recap'))"
+
+
 def connect():
     return psycopg.connect(database_url(), autocommit=True)
 
