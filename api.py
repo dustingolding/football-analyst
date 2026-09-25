@@ -1,6 +1,7 @@
 """JSON API for apps (the iOS app): /api/v1/...
 
-Read-only, versioned, and built on the same queries as the website. Conventions:
+Read-only apart from device registration for push notifications (PUT/DELETE /devices/<id>),
+versioned, and built on the same queries as the website. Conventions:
     - responses are {"data": ..., "meta": {...}}; errors are {"error": {"code": ..., "message": ...}}
     - ids are strings, times are ISO 8601 UTC, keys are snake_case, probabilities are 0-1
     - requests carry an API key in the X-API-Key header (create one with api_keys.py);
@@ -12,14 +13,17 @@ Breaking changes get a new version prefix (/api/v2); fields may be added to v1 a
 
 import hashlib
 import os
+import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-from flask import Blueprint, abort, jsonify, request
+import psycopg
+from flask import Blueprint, abort, g, jsonify, request
 
 import app as site
 import web_data
+from database import connect
 from openapi import SPEC
 
 bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
@@ -65,6 +69,7 @@ def authenticate():
     if len(window) >= record["rate_per_minute"]:
         raise ApiError(429, "rate_limited", f"Limit is {record['rate_per_minute']} requests per minute.")
     window.append(now)
+    g.api_key_prefix = record["prefix"]
 
 
 def respond(data, max_age=300, **meta):
@@ -438,6 +443,100 @@ def article(league, slug):
     if not a or a["league"] != league:
         raise ApiError(404, "not_found", "No such article.")
     return respond(article_item(a, body=True), max_age=300)
+
+
+# --- push notification devices ---------------------------------------------------------------
+
+INSTALL_ID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+APNS_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,200}$")
+BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
+TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+MAX_FOLLOWS = 200
+ALERTS = ("kickoff", "scoring", "final")
+
+
+def install_id_or_error(install_id):
+    if not INSTALL_ID.match(install_id):
+        raise ApiError(400, "bad_request", "The device id must be a UUID.")
+    return install_id.lower()
+
+
+def no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.put("/devices/<install_id>")
+def register_device(install_id):
+    """Create or replace an install's registration: token, alert switches and followed teams, all at once,
+    so the app can resend its whole state whenever anything changes."""
+    install_id = install_id_or_error(install_id)
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ApiError(400, "bad_request", "Send a JSON object.")
+    token = str(body.get("apns_token") or "")
+    if not APNS_TOKEN.match(token):
+        raise ApiError(400, "bad_request", "apns_token must be the device token as hex.")
+    environment = body.get("environment")
+    if environment not in ("sandbox", "production"):
+        raise ApiError(400, "bad_request", "environment must be sandbox or production.")
+    bundle_id = str(body.get("bundle_id") or "")
+    if not BUNDLE_ID.match(bundle_id):
+        raise ApiError(400, "bad_request", "bundle_id is required.")
+    timezone_name = body.get("timezone")
+    timezone_name = str(timezone_name)[:64] if timezone_name else None
+    alerts = body.get("alerts") or {}
+    if not isinstance(alerts, dict):
+        raise ApiError(400, "bad_request", "alerts must be an object of booleans.")
+    switches = [alerts.get(name, True) is not False for name in ALERTS]
+    follows = body.get("follows") or []
+    if not isinstance(follows, list) or len(follows) > MAX_FOLLOWS:
+        raise ApiError(400, "bad_request", f"follows must be a list of at most {MAX_FOLLOWS} teams.")
+    teams = set()
+    for item in follows:
+        league, team_id = (item or {}).get("league"), str((item or {}).get("team_id") or "")
+        if league not in site.LEAGUES or not TEAM_ID.match(team_id):
+            raise ApiError(400, "bad_request", "Each follow needs a league (nfl or cfb) and a team_id.")
+        teams.add((league, team_id))
+
+    try:
+        with connect() as conn, conn.transaction():
+            # A reinstall gets a new install id but can keep its token; the old row goes.
+            conn.execute("DELETE FROM push_devices WHERE apns_token = %s AND install_id <> %s", (token, install_id))
+            conn.execute(
+                """
+                INSERT INTO push_devices (install_id, apns_token, environment, bundle_id, timezone, alert_kickoff,
+                                          alert_scoring, alert_final, api_key_prefix)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (install_id) DO UPDATE SET
+                    apns_token = EXCLUDED.apns_token, environment = EXCLUDED.environment,
+                    bundle_id = EXCLUDED.bundle_id, timezone = EXCLUDED.timezone,
+                    alert_kickoff = EXCLUDED.alert_kickoff, alert_scoring = EXCLUDED.alert_scoring,
+                    alert_final = EXCLUDED.alert_final, api_key_prefix = EXCLUDED.api_key_prefix,
+                    disabled_at = NULL, last_error = NULL, updated_at = now()
+                """,
+                (install_id, token, environment, bundle_id, timezone_name, *switches, g.get("api_key_prefix")))
+            conn.execute("DELETE FROM push_follows WHERE install_id = %s", (install_id,))
+            with conn.cursor() as cur:
+                cur.executemany("INSERT INTO push_follows (install_id, league, team_id) VALUES (%s, %s, %s)",
+                                [(install_id, league, team_id) for league, team_id in sorted(teams)])
+    except psycopg.errors.UndefinedTable:
+        # The tables are created by the pipeline's schema setup; until that has run, say so plainly.
+        raise ApiError(503, "unavailable", "Notifications aren't set up on this server yet.")
+    return no_store(respond({"install_id": install_id, "follows": len(teams),
+                             "alerts": dict(zip(ALERTS, switches))}))
+
+
+@bp.delete("/devices/<install_id>")
+def delete_device(install_id):
+    """Forget an install (notifications turned off, or the app is signing out)."""
+    install_id = install_id_or_error(install_id)
+    try:
+        with connect() as conn:
+            deleted = conn.execute("DELETE FROM push_devices WHERE install_id = %s", (install_id,)).rowcount
+    except psycopg.errors.UndefinedTable:
+        deleted = 0
+    return no_store(respond({"install_id": install_id, "deleted": bool(deleted)}))
 
 
 @bp.route("/<path:unused>")
