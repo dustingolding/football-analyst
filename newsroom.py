@@ -348,7 +348,8 @@ def recap_facts(conn, g, summary, plays):
     margin = ws - ls
     where = ", ".join(x for x in (g["venue_name"], g["venue_city"], g["venue_state"]) if x)
     ot = len(g["home_linescores"] or []) > 4
-    game = [f"{LEAGUE_NAMES[g['league']]} {g['season']}, {week_label(g)}",
+    played = g["start_time"].astimezone(EASTERN)
+    game = [f"{LEAGUE_NAMES[g['league']]} {g['season']}, {week_label(g)}, played {played.strftime('%A, %B %-d')}",
             f"Final score: {win} {ws}, {lose} {ls}" + (" (overtime)" if ot else "") + (f", at {where}" if where else ""),
             f"Winning margin: {margin} points"]
     game.append("Type of game: " + ("one-score finish" if margin <= 8 else "comfortable win" if margin <= 16
@@ -474,14 +475,18 @@ Rules you must follow:
 - Each fact line names the team or player it belongs to. Never attribute a number to a different team or player.
 - Set the tone from the "Type of game" and "Upset" lines: call a game close only if it was a one-score finish.
 - Refer to teams by the names given. Mention our model's numbers where they help the story.
+- Write like a newspaper sportswriter, not a stat sheet: tell a story with a clear angle, vary sentence length,
+  and choose the few details that matter. Don't walk through every scoring play or list every stat.
+- Put stats into prose: "194 yards on 29 carries", "18 of 25 for 256 yards", never "29 CAR" or "18/25, 256 YDS".
+  Mention game-clock times only when the timing is the story.
 Return JSON: {"headline": "...", "dek": "one-sentence summary", "body": "the article as plain paragraphs separated by blank lines"}"""
 
 TASKS = {
     "preview": "Write a game preview of {lo}-{hi} words: the matchup, what each team does well, key players, "
                "injuries if listed, the betting line and what our model expects.",
-    "recap": "Write a game recap of {lo}-{hi} words. Lead with the result, tell the game in the order of the scoring "
-             "plays (use the score after each one exactly as written), then the key performers and the stats that "
-             "decided it, and how it compared with the pre-game expectations.",
+    "recap": "Write a game recap of {lo}-{hi} words. Lead with the result and the story of the game, cover the "
+             "turning points in order (any score you give must match the scoring plays), the key performers and the "
+             "stats that decided it, and how it compared with the pre-game expectations.",
     "editorial": "Write a weekly column of {lo}-{hi} words on the state of the league according to our ratings: "
                  "who is on top and why, who moved, and which teams are beating or missing their preseason "
                  "projections. Give it a point of view, but stay within the facts.",
