@@ -713,3 +713,127 @@ def game_availability(league, g):
     for side in out:
         out[side].sort(key=lambda r: (order.get(r["status"], 9), r["player_name"]))
     return out
+
+
+# --- Newsroom articles (newsroom.py writes; /newsroom reviews) --------------------------------------------------
+
+KIND_LABELS = {"preview": "Preview", "recap": "Recap", "ratings": "Power Ratings", "editorial": "Column"}
+KIND_PLURALS = {"preview": "Previews", "recap": "Recaps", "ratings": "Power Ratings", "editorial": "Columns"}
+ARTICLE_COLS = ("id, league, kind, game_id, season, week, slug, headline, dek, status, model, created_at, "
+                "published_at, updated_at")
+
+
+def _label(rows):
+    for r in rows:
+        r["kind_label"] = KIND_LABELS.get(r["kind"], r["kind"].title())
+    return rows
+
+
+def latest_articles(league=None, n=6, kind=None, offset=0):
+    """Published articles, newest first."""
+    where, params = ["status = 'published'"], []
+    if league:
+        where.append("league = %s")
+        params.append(league)
+    if kind:
+        where.append("kind = %s")
+        params.append(kind)
+    return _label(query(f"SELECT {ARTICLE_COLS} FROM articles WHERE {' AND '.join(where)} "
+                        "ORDER BY published_at DESC, id DESC LIMIT %s OFFSET %s", (*params, n, offset)))
+
+
+def article(slug=None, article_id=None, published_only=True):
+    rows = query(f"SELECT {ARTICLE_COLS}, body, facts, checks, reviewed_at FROM articles WHERE "
+                 + ("slug = %s" if slug else "id = %s") + (" AND status = 'published'" if published_only else ""),
+                 (slug or article_id,))
+    return _label(rows)[0] if rows else None
+
+
+def game_articles(league, game_id):
+    """Published preview/recap for a game: {kind: article}."""
+    return {r["kind"]: r for r in _label(query(
+        f"SELECT {ARTICLE_COLS} FROM articles WHERE league = %s AND game_id = %s AND status = 'published'",
+        (league, game_id)))}
+
+
+def review_queue():
+    return {status: _label(query(f"SELECT {ARTICLE_COLS}, checks FROM articles WHERE status = %s "
+                                 "ORDER BY created_at DESC LIMIT %s", (status, 100 if status == "review" else 40)))
+            for status in ("review", "published", "rejected")}
+
+
+def update_article(article_id, status=None, headline=None, dek=None, body=None):
+    """Review actions from /newsroom (the web role may only touch these columns)."""
+    sets, params = ["updated_at = now()", "reviewed_at = now()"], []
+    for col, val in (("headline", headline), ("dek", dek), ("body", body)):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            params.append(val)
+    if status:
+        sets.append("status = %s")
+        params.append(status)
+        if status == "published":
+            sets.append("published_at = COALESCE(published_at, now())")
+    with connect() as conn:
+        conn.execute(f"UPDATE articles SET {', '.join(sets)} WHERE id = %s", (*params, article_id))
+
+
+BOX_MAIN = ("passing", "rushing", "receiving")
+BOX_MORE = ("defensive", "interceptions", "fumbles", "kickReturns", "puntReturns", "kicking", "punting")
+
+
+def game_boxscore(league, game_id, away_id, home_id):
+    """ESPN player box score arranged for side-by-side display: [(category name, title, away cat, home cat)],
+    main categories first. None when we have no box score for the game."""
+    rows = query("SELECT data, final, updated_at FROM game_boxscores WHERE league = %s AND game_id = %s",
+                 (league, game_id))
+    if not rows:
+        return None
+    by_team = {t["team_id"]: {c["name"]: c for c in t["categories"]} for t in rows[0]["data"]}
+    away, home = by_team.get(str(away_id), {}), by_team.get(str(home_id), {})
+    out = []
+    for name in BOX_MAIN + BOX_MORE:
+        a, h = away.get(name), home.get(name)
+        if a or h:
+            out.append({"name": name, "title": (a or h)["title"], "away": a, "home": h, "main": name in BOX_MAIN})
+    return {"categories": out, "final": rows[0]["final"], "updated_at": rows[0]["updated_at"]} if out else None
+
+
+KIND_WEIGHT = {"recap": 5, "ratings": 5, "editorial": 4, "preview": 3}
+
+
+def lead_stories(league=None, n=4):
+    """The hero's stories: the week's biggest published story first, then the next most newsworthy.
+    Newsworthiness = kind (recaps and power ratings lead) + upsets and ranked matchups - age (1 point per 12 h)."""
+    def build():
+        where, params = ["a.status = 'published'", "a.published_at > now() - interval '7 days'"], []
+        if league:
+            where.append("a.league = %s")
+            params.append(league)
+        rows = query(f"""
+            SELECT a.id, a.league, a.kind, a.slug, a.headline, a.dek, a.published_at,
+                   extract(epoch FROM now() - a.published_at) / 3600 AS age_h,
+                   (a.facts->'game')::text LIKE '%%Upset: yes%%' AS upset, a.facts->'_table'->0 AS top_team,
+                   g.home_rank, g.away_rank, h.logo AS home_logo, h.color AS home_color, h.short_name AS home_short,
+                   aw.logo AS away_logo, aw.color AS away_color, aw.short_name AS away_short
+            FROM articles a
+            LEFT JOIN games g ON g.league = a.league AND g.game_id = a.game_id
+            LEFT JOIN teams h ON h.league = g.league AND h.team_id = g.home_team_id
+            LEFT JOIN teams aw ON aw.league = g.league AND aw.team_id = g.away_team_id
+            WHERE {' AND '.join(where)}""", params)
+        top_colors = {}
+        for r in rows:
+            if r["top_team"]:
+                t = r["top_team"]
+                info = teams(r["league"]).get(t.get("team_id")) or {}
+                r.update(home_logo=t.get("logo"), home_color=info.get("color"), home_short=t.get("short"),
+                         away_logo=None, away_color=info.get("alternate_color"))
+            score = KIND_WEIGHT.get(r["kind"], 2) - float(r["age_h"]) / 12
+            score += 3 if r["upset"] else 0
+            for rank in (r["home_rank"], r["away_rank"]):
+                if rank:
+                    score += 2 if rank <= 10 else 1
+            r["score"] = score
+            r["kind_label"] = KIND_LABELS.get(r["kind"], r["kind"].title())
+        return sorted(rows, key=lambda r: -r["score"])[:n]
+    return cached(("lead", league, n), build)

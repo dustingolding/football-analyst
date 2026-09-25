@@ -205,7 +205,20 @@ def game(league, game_id):
     data["injuries"] = {side: [{"player": r["player_name"], "position": r["position"], "status": r["status"],
                                 "games": r.get("games"), "detail": r.get("detail") or r.get("headline"),
                                 "url": r.get("url")} for r in availability[side]] for side in ("home", "away")}
+    data["box_score"] = box_score(league, g)
     return respond(data, max_age=30 if g["state"] == "in" else 300)
+
+
+def box_score(league, g):
+    """Player box score by category, in ESPN's columns: {final, categories: [{name, title, labels, home, away}]}."""
+    box = web_data.game_boxscore(league, g["game_id"], g["away_team_id"], g["home_team_id"])
+    if not box:
+        return None
+    side = lambda c: c and {"players": [{"id": p["id"], "name": p["name"], "stats": p["stats"]} for p in c["players"]],  # noqa: E731
+                            "totals": c["totals"] or None}
+    return {"final": box["final"], "categories": [
+        {"name": c["name"], "title": c["title"], "labels": (c["away"] or c["home"])["labels"],
+         "home": side(c["home"]), "away": side(c["away"])} for c in box["categories"]]}
 
 
 @bp.get("/<league>/games/<game_id>/live")
@@ -396,6 +409,35 @@ def models():
     return respond({league: {"games": m["games"], "test_first_season": site.TEST_FIRST_SEASON, "models": [
         {"model": label, "description": note, **{k: num(v) for k, v in metrics.items()}}
         for label, note, metrics in m["rows"]]} for league, m in site.compute_metrics().items()}, max_age=3600)
+
+
+def article_item(a, body=False):
+    item = {"id": str(a["id"]), "slug": a["slug"], "league": a["league"], "kind": a["kind"], "game_id": a["game_id"],
+            "headline": a["headline"], "dek": a["dek"], "published_at": iso(a["published_at"]),
+            "url": f"https://{request.host}/{a['league']}/news/{a['slug']}"}
+    if body:
+        item["paragraphs"] = [p.strip() for p in (a.get("body") or "").split("\n\n") if p.strip()]
+    return item
+
+
+@bp.get("/<league>/articles")
+def articles(league):
+    league_or_error(league)
+    kind = request.args.get("kind")
+    if kind and kind not in web_data.KIND_LABELS:
+        raise ApiError(400, "bad_request", f"kind must be one of {list(web_data.KIND_LABELS)}.")
+    limit = min(max(request.args.get("limit", 20, type=int), 1), 50)
+    rows = web_data.latest_articles(league, limit, kind, max(request.args.get("offset", 0, type=int), 0))
+    return respond([article_item(a) for a in rows], max_age=120)
+
+
+@bp.get("/<league>/articles/<slug>")
+def article(league, slug):
+    league_or_error(league)
+    a = web_data.article(slug=slug)
+    if not a or a["league"] != league:
+        raise ApiError(404, "not_found", "No such article.")
+    return respond(article_item(a, body=True), max_age=300)
 
 
 @bp.route("/<path:unused>")

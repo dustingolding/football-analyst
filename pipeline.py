@@ -32,6 +32,7 @@ def steps(stage):
         ("ESPN lines", ["espn_odds.py", "--league", "nfl", "cfb", *this_season]),
         ("NFL injury reports / depth charts", ["nflverse_availability.py", *this_season]),
         ("CFB injury news (LLM)", ["cfb_news.py"] + (["--teams"] if stage != "refresh" else [])),
+        ("ESPN player box scores", ["espn_boxscores.py"]),
     ]
     daily = [
         ("CFBD lines", ["cfbd.py", *this_season]),
@@ -52,7 +53,7 @@ def steps(stage):
     finish = {
         "refresh": [("predict upcoming", ["predict.py"])],
         "daily": [("predict upcoming", ["predict.py"])],
-        "weekly": [("retrain models", ["train.py"])],
+        "weekly": [("retrain models", ["train.py"]), ("model explainers", ["explain.py"])],
     }[stage]
     return ingest + (daily if stage in ("daily", "weekly") else []) + model + finish
 

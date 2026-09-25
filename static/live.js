@@ -81,7 +81,16 @@
     if (!panel) return;
     fetch(panel.dataset.livePanel, {cache: "no-store"})
       .then(function (r) { return r.ok ? r.text() : null; })
-      .then(function (html) { if (html !== null) panel.innerHTML = html; })
+      .then(function (html) { if (html !== null) {
+          // keep collapsible sections (box score extras) the way the reader left them
+          var open = {};
+          panel.querySelectorAll("details[data-keep-open]").forEach(function (d) { open[d.dataset.keepOpen] = d.open; });
+          panel.innerHTML = html;
+          panel.querySelectorAll("details[data-keep-open]").forEach(function (d) {
+            if (d.dataset.keepOpen in open) d.open = open[d.dataset.keepOpen];
+          });
+          if (window.renderCharts) window.renderCharts(panel);
+        } })
       .catch(function () {})
       .then(done || function () {});
   }

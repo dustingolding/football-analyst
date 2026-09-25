@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_charts.html" import chart %}
 {% block title %}Model performance{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -39,6 +40,12 @@
   </tbody>
 </table>
 </div>
+{% set cal = calibration_chart(data.calibration) %}
+{% if cal %}
+<h3 class="chart-head">Are the probabilities honest?</h3>
+{{ chart(cal, leagues[key] ~ ' calibration: predicted vs actual home win rate', 'Games grouped by predicted home win chance; a well-calibrated model sits on the diagonal. Bins with fewer than 15 games are left out.', cal.legend) }}
+{% endif %}
 {% endfor %}
+<p class="muted small">New to the numbers? <a href="{{ url_for('how_it_works') }}">How our models work</a>.</p>
 <p class="muted small">Log loss and Brier score measure win probabilities (lower is better). "Vs spread" is how often the model's margin picked the side that covered the closing spread; 52.4% is break-even at standard -110 odds.</p>
 {% endblock %}

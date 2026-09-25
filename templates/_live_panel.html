@@ -1,3 +1,4 @@
+{% from "_charts.html" import chart %}
 {# Live situation, win-probability chart and play-by-play. Rendered in game.html and re-fetched by live.js. #}
 {% set possession = g.home_abbr if live and live.possession_team_id == g.home_team_id else (g.away_abbr if live and live.possession_team_id == g.away_team_id else none) %}
 {% if live and live.state == 'in' %}
@@ -13,18 +14,13 @@
   </div>
 {% endif %}
 
-{% if wp_points %}
+{% if wp %}
   <h2>Win probability</h2>
-  <div class="panel wp-chart">
-    <div class="wp-labels"><span>{{ g.home_abbr }} 100%</span><span>{{ g.away_abbr }} 100%</span></div>
-    <svg viewBox="0 0 600 120" preserveAspectRatio="none" role="img" aria-label="{{ g.home_abbr }} win probability over the game">
-      <line x1="0" y1="60" x2="600" y2="60" class="wp-mid"></line>
-      <polyline points="{{ wp_points }}" class="wp-line" vector-effect="non-scaling-stroke"></polyline>
-    </svg>
-    <div class="wp-axis muted small"><span>Q1</span><span>Q2</span><span>Q3</span><span>Q4</span></div>
-    <div class="muted small">{{ g.home_abbr }} win probability after each play (ESPN){% if wp_last is not none %} · now {{ wp_last|pct }}{% endif %}</div>
-  </div>
+  {{ chart(wp, g.home_abbr ~ ' win probability over the game',
+           g.home_abbr ~ ' win probability after each play (ESPN)' ~ (' · now ' ~ (wp.last|pct) if live and live.state == 'in' else '')) }}
 {% endif %}
+
+{% include "_boxscore.html" %}
 
 {% if plays %}
   <h2>Play-by-play <small class="muted">· {{ plays|length }} most recent</small></h2>

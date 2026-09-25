@@ -1,0 +1,29 @@
+{# Hero: the biggest recent story (team colors + logos) and the next few headlines. `lead` from web_data.lead_stories. #}
+{% if lead %}{% set top = lead[0] %}
+<section class="lead">
+  <a class="lead-main" href="{{ url_for('newsroom_web.article_page', league=top.league, slug=top.slug) }}"
+     style="--c1: #{{ top.home_color or '1f6feb' }}; --c2: #{{ top.away_color or top.home_color or '0f141b' }};">
+    <div class="lead-logos" aria-hidden="true">
+      {% if top.away_logo %}<img src="{{ top.away_logo }}" alt="">{% endif %}
+      {% if top.home_logo %}<img src="{{ top.home_logo }}" alt="">{% endif %}
+    </div>
+    <div class="lead-text">
+      <span class="lead-kicker">{{ top.league|upper }} {{ top.kind_label }}{% if top.upset %} · Upset{% endif %}</span>
+      <h2>{{ top.headline }}</h2>
+      {% if top.dek %}<p>{{ top.dek }}</p>{% endif %}
+      <span class="lead-more">Read the story →</span>
+    </div>
+  </a>
+  {% if lead|length > 1 %}
+  <div class="lead-side">
+    <h3>Top stories</h3>
+    {% for a in lead[1:] %}
+      <a href="{{ url_for('newsroom_web.article_page', league=a.league, slug=a.slug) }}">
+        <span class="story-kind">{{ a.league|upper }} {{ a.kind_label }}</span><strong>{{ a.headline }}</strong>
+      </a>
+    {% endfor %}
+    <a class="lead-all" href="{{ url_for('newsroom_web.articles_page', league=league or top.league) }}">All stories →</a>
+  </div>
+  {% endif %}
+</section>
+{% endif %}

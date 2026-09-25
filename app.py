@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
 
+import charts
 import web_data
 from database import closing_lines, connect
 
@@ -241,25 +242,12 @@ def live_panel_context(league, g):
         "SELECT play_id, sequence, drive, period, clock, team_id, play_type, text, home_score, away_score, scoring, "
         "home_win_prob FROM live_plays WHERE league = %s AND game_id = %s ORDER BY sequence, play_id",
         (league, g["game_id"]))
-    series = [p["home_win_prob"] for p in plays if p["home_win_prob"] is not None]
-    points = ""
-    if len(series) >= 2:
-        # x = game time elapsed (0-60 min, stretched for overtime), so the line fills in as the game goes.
-        def elapsed(p):
-            try:
-                minutes, seconds = (p["clock"] or "0:00").split(":")
-                left = int(minutes) * 60 + int(float(seconds))
-            except ValueError:
-                left = 0
-            return (min(p["period"] or 1, 5) - 1) * 900 + (900 - min(left, 900))
-        timed = [(elapsed(p), p["home_win_prob"]) for p in plays if p["home_win_prob"] is not None]
-        span = max(3600, max(t for t, _ in timed))
-        w, h = 600, 120
-        points = " ".join(f"{t * w / span:.1f},{(1 - v) * h:.1f}" for t, v in timed)
+    wp = charts.win_probability(plays, g["home_abbr"], g["away_abbr"])
     team_abbr = {g["home_team_id"]: g["home_abbr"], g["away_team_id"]: g["away_abbr"]}
     for p in plays:
         p["team_abbr"] = team_abbr.get(p["team_id"], "")
-    return {"plays": list(reversed(plays))[:80], "wp_points": points, "wp_last": series[-1] if series else None,
+    box = web_data.game_boxscore(league, g["game_id"], g["away_team_id"], g["home_team_id"])
+    return {"plays": list(reversed(plays))[:80], "wp": wp, "box": box,
             "live": g.get("live")}
 
 
@@ -300,9 +288,12 @@ def upcoming_games(league, days=8):
 
 
 def last_week_results(league):
-    """The most recent week with completed games: its games (with predictions) and our record."""
-    row = query("SELECT season, season_type, week FROM games WHERE league = %s AND completed "
-                "AND start_time < now() ORDER BY start_time DESC LIMIT 1", (league,))
+    """The most recent fully finished week: its games (with predictions) and our record."""
+    row = query("SELECT season, season_type, week FROM games g WHERE league = %s AND completed "
+                "AND start_time < now() AND NOT EXISTS (SELECT 1 FROM games o WHERE o.league = g.league "
+                "AND o.season = g.season AND o.season_type = g.season_type AND o.week = g.week AND NOT o.completed "
+                "AND o.start_time > now() - interval '2 days') "
+                "ORDER BY start_time DESC LIMIT 1", (league,))
     if not row:
         return None
     r = row[0]
@@ -328,46 +319,88 @@ def season_record(league):
     return {"season": season, "picks": (sum(picks), len(picks)), "ats": (sum(leans), len(leans))}
 
 
+def featured_games(league, limit=10):
+    """Upcoming/live games worth featuring (college: games with a ranked team)."""
+    games = upcoming_games(league)
+    if league == "cfb":
+        games = [g for g in games if g["home_rank"] or g["away_rank"] or g["state"] == "in"]
+    return games[:limit]
+
+
+def model_edges(league, limit=3):
+    """Upcoming games where our line-free model disagrees with Vegas most: real matchups (FBS vs
+    FBS in college) with sane spreads; on 30-point lines a big gap is mostly noise."""
+    season = web_data.seasons(league)[0]
+    candidates = [g for g in upcoming_games(league) if g.get("edge") is not None and abs(g["edge"]) >= 3
+                  and abs(g["line"].get("spread") or 99) <= 21
+                  and web_data.is_major(league, g["home_team_id"], season)
+                  and web_data.is_major(league, g["away_team_id"], season)]
+    return sorted(candidates, key=lambda g: -abs(g["edge"]))[:limit]
+
+
+def power_top(league, n=10):
+    season = web_data.seasons(league)[0]
+    team_map, recs = web_data.teams(league), web_data.records(league, season)
+    rows = sorted((t for t in web_data.power_ratings(league, season).values() if t.get("rank")),
+                  key=lambda t: t["rank"])[:n]
+    return [dict(t, team=team_map.get(t["team_id"]), record=(recs.get(t["team_id"]) or {}).get("overall", "0-0"))
+            for t in rows]
+
+
+def ap_top(n=10):
+    season = web_data.seasons("cfb")[0]
+    weeks = web_data.poll_weeks("cfb", season)
+    if not weeks:
+        return []
+    tables = web_data.poll_tables("cfb", season, weeks[0]["season_type"], weeks[0]["week"])
+    return next((t["rows"][:n] for t in tables if t["title"] == "AP Top 25"), [])
+
+
 @app.route("/")
 def home():
-    featured = {}
-    edges = []
-    for league in LEAGUES:
-        games = upcoming_games(league)
-        if league == "cfb":
-            # Games with a ranked team, then the closest remaining FBS matchups by win probability.
-            ranked = [g for g in games if g["home_rank"] or g["away_rank"]]
-            featured[league] = ranked[:10]
-        else:
-            featured[league] = games[:10]
-        # Disagreements worth a look: real matchups (FBS vs FBS in college) with sane spreads;
-        # on 30-point lines a big gap is mostly noise. Top three per league.
-        season = web_data.seasons(league)[0]
-        candidates = [g for g in games if g.get("edge") is not None and abs(g["edge"]) >= 3
-                      and abs(g["line"].get("spread") or 99) <= 21
-                      and web_data.is_major(league, g["home_team_id"], season)
-                      and web_data.is_major(league, g["away_team_id"], season)]
-        candidates.sort(key=lambda g: -abs(g["edge"]))
-        edges += [(league, g) for g in candidates[:3]]
-
-    nfl_season = web_data.seasons("nfl")[0]
-    team_map = web_data.teams("nfl")
-    power = sorted((t for t in web_data.power_ratings("nfl", nfl_season).values() if t.get("rank")),
-                   key=lambda t: t["rank"])[:10]
-    for t in power:
-        t["team"] = team_map.get(t["team_id"])
-        t["record"] = (web_data.records("nfl", nfl_season).get(t["team_id"]) or {}).get("overall", "0-0")
-    cfb_season = web_data.seasons("cfb")[0]
-    weeks = web_data.poll_weeks("cfb", cfb_season)
-    ap = []
-    if weeks:
-        tables = web_data.poll_tables("cfb", cfb_season, weeks[0]["season_type"], weeks[0]["week"])
-        ap = next((t["rows"][:10] for t in tables if t["title"] == "AP Top 25"), [])
-
+    lead = web_data.lead_stories(None)
+    featured = {league: featured_games(league) for league in LEAGUES}
+    edges = [(league, g) for league in LEAGUES for g in model_edges(league)]
     return render_template(
-        "home.html", featured=featured, edges=edges, power=power, ap=ap,
+        "home.html", featured=featured, edges=edges, power=power_top("nfl"), ap=ap_top(),
         results={lg: last_week_results(lg) for lg in LEAGUES}, records={lg: season_record(lg) for lg in LEAGUES},
-        independent=INDEPENDENT_MODEL,
+        independent=INDEPENDENT_MODEL, lead=lead, stories=[a for a in web_data.latest_articles(None, 10)
+                                                          if a["id"] not in {x["id"] for x in lead}][:6],
+        league=None,
+    )
+
+
+@app.route("/<league>/")
+def league_home(league):
+    """League hub: this week's games, latest stories, ratings, standings snapshot, leaders."""
+    league_or_404(league)
+    if request.args.get("week") or request.args.get("season"):  # old slate links
+        return redirect(url_for("slate", league=league, **request.args))
+    season, season_type, week = current_week(league)
+    lead = web_data.lead_stories(league)
+    games = featured_games(league, limit=12)
+    live = [g for g in games if g["state"] == "in"]
+    groups = web_data.standings(league, season)
+    if league == "nfl":
+        leaders_by_group = [(grp["name"], grp["teams"][:1]) for grp in groups]
+    else:
+        big = ["SEC", "Big Ten", "Big 12", "ACC"]
+        leaders_by_group = [(grp["name"], grp["teams"][:2]) for grp in sorted(
+            groups, key=lambda grp: (grp["name"] not in big, big.index(grp["name"]) if grp["name"] in big else 0,
+                                     grp["name"]))]
+    boards = [web_data.player_board(league, season, web_data.find_player_spec(slug), limit=3)
+              for slug in ("passing-yards", "rushing-yards", "receiving-yards", "sacks")]
+    preseason = web_data.preseason_table(league, season) if season in web_data.preseason_seasons(league) else []
+    if league == "cfb":  # chance of a top-10 season
+        outlook = sorted((r for r in preseason if r.get("elite_prob") is not None), key=lambda r: -r["elite_prob"])[:6]
+    else:  # biggest surprises: playing furthest above their preseason projection
+        outlook = sorted((r for r in preseason if r["actual"] is not None), key=lambda r: -(r["actual"] - r["rating"]))[:6]
+    return render_template(
+        "league_home.html", league=league, league_name=LEAGUES[league], season=season, season_type=season_type,
+        week=week, games=games, live=live, edges=model_edges(league), power=power_top(league),
+        ap=ap_top() if league == "cfb" else [], leaders_by_group=leaders_by_group, boards=boards, outlook=outlook,
+        result=last_week_results(league), record=season_record(league), independent=MODEL_LABELS[INDEPENDENT_MODEL[league]],
+        lead=lead, stories=[a for a in web_data.latest_articles(league, 10) if a["id"] not in {x["id"] for x in lead}][:6],
     )
 
 
@@ -377,7 +410,7 @@ def healthz():
     return {"ok": True}
 
 
-@app.route("/<league>/")
+@app.route("/<league>/games")
 def slate(league):
     league_or_404(league)
     season, season_type, week = current_week(league)
@@ -446,6 +479,7 @@ def game(league, game_id):
     models = [(MODEL_LABELS.get(k, k), MODEL_NOTES.get(k, ""), v) for k, v in sorted(
         g["preds"].items(), key=lambda kv: list(MODEL_LABELS).index(kv[0]) if kv[0] in MODEL_LABELS else 99)]
     return render_template("game.html", league=league, league_name=LEAGUES[league], g=g, matchup=matchup,
+                           stories=web_data.game_articles(league, game_id),
                            models=models, books=books, context=f, availability=web_data.game_availability(league, g),
                            **live_panel_context(league, g))
 
@@ -541,6 +575,7 @@ def team_page(league, team_id):
                    else web_data.nfl_moves(season, team_id)[:2]) if tab == "offseason" else ([], []),
         draft=web_data.nfl_moves(season, team_id)[2] if tab == "offseason" and league == "nfl" else [],
         labels=GROUP_LABELS[league],
+        elo_chart=charts.elo_history(league, team_id, season) if tab == "home" else None,
     )
 
 
@@ -725,7 +760,23 @@ def compute_metrics():
         vegas = score(lambda gid: (lines[gid]["home_prob"], -lines[gid]["spread"], lines[gid]["total"]))
         vegas["ats"] = None
         rows.append(("Vegas closing line", "Median across sportsbooks; the benchmark.", vegas))
-        out[league] = {"games": len(common), "rows": rows}
+
+        def calibration(get):  # 10-point bins of predicted home win probability -> actual home win rate
+            bins = [[0, 0, 0.0] for _ in range(10)]
+            for gid in common:
+                prob = get(gid)
+                if prob is None or games[gid]["margin"] == 0:
+                    continue
+                b = bins[min(int(prob * 10), 9)]
+                b[0] += 1
+                b[1] += games[gid]["margin"] > 0
+                b[2] += prob
+            return [{"bin": i, "n": n, "actual": w / n, "predicted": p / n} for i, (n, w, p) in enumerate(bins) if n >= 15]
+
+        calib = [(MODEL_LABELS[m], calibration(lambda gid, p=preds[m]: p[gid]["home_win_prob"]))
+                 for m in (INDEPENDENT_MODEL[league], "xgb_market") if m in preds]
+        calib.append(("Vegas", calibration(lambda gid: lines[gid]["home_prob"])))
+        out[league] = {"games": len(common), "rows": rows, "calibration": calib}
     _metrics_cache.update(at=time.time(), data=out)
     return out
 
@@ -734,6 +785,34 @@ def compute_metrics():
 def models():
     return render_template("models.html", metrics=compute_metrics(), leagues=LEAGUES,
                            first_season=TEST_FIRST_SEASON)
+
+
+@app.route("/how-it-works")
+def how_it_works():
+    """Explainer: Elo, EPA, the models, preseason ratings and how well it all works, with charts."""
+    metrics = compute_metrics()
+    leagues = {}
+    for league in LEAGUES:
+        params = query("SELECT details->'params' AS p, (details->>'margin_per_elo')::float AS m FROM predictions "
+                       "WHERE league = %s AND model = 'elo' ORDER BY created_at DESC LIMIT 1", (league,))
+        season = web_data.seasons(league)[0]
+        top = next((t for t in web_data.power_ratings(league, season).values() if t.get("rank") == 1), None)
+        preseason = web_data.preseason_table(league, season)
+        pre_top = max(preseason, key=lambda r: r["rating"]) if preseason else None
+        rows = {label: m for label, _, m in metrics[league]["rows"]}
+        leagues[league] = {
+            "name": LEAGUES[league], "elo": params[0] if params else None, "season": season,
+            "independent": MODEL_LABELS[INDEPENDENT_MODEL[league]],
+            "scores": {k: rows.get(v) for k, v in (("elo", "Elo"), ("ind", MODEL_LABELS[INDEPENDENT_MODEL[league]]),
+                                                   ("market", "Market-adjusted"), ("vegas", "Vegas closing line"))},
+            "games": metrics[league]["games"],
+            "top": top and {**top, "team": web_data.teams(league).get(top["team_id"])},
+            "elo_chart": charts.elo_history(league, top["team_id"], season) if top else None,
+            "pre_top": pre_top,
+            "families": charts.model_families(league),
+            "calibration": charts.calibration(metrics[league]["calibration"]),
+        }
+    return render_template("how_it_works.html", data=leagues, first_season=TEST_FIRST_SEASON)
 
 
 _ticker_cache = {"at": 0.0, "data": None}
@@ -799,9 +878,12 @@ def not_found(err):
 
 @app.context_processor
 def inject_globals():
-    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV}
+    return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV,
+            "contributions_chart": charts.contributions, "calibration_chart": charts.calibration}
 
 
 # The JSON API for apps (/api/v1); registered last because api.py imports this module.
 from api import bp as api_v1  # noqa: E402
+from newsroom_web import bp as newsroom_bp  # noqa: E402
 app.register_blueprint(api_v1)
+app.register_blueprint(newsroom_bp)

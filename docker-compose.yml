@@ -3,14 +3,16 @@ services:
     image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      # Only read when the data volume is first created (long done). The password lives in the k8s Secrets'
+      # DATABASE_URLs; to rebuild from scratch, run with POSTGRES_PASSWORD set in the shell.
+      POSTGRES_USER: football
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: football
     ports:
       # Localhost for scripts run on this machine, and the Docker bridge address so k3s pods
       # can reach it. Neither is reachable from the LAN.
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-      - "172.17.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:5432:5432"
+      - "172.17.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

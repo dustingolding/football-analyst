@@ -1,0 +1,18 @@
+{# A chart from charts.py: rendered by static/charts.js; the data table is the no-JS / screen-reader view. #}
+{% macro chart(c, title, caption=none, legend=none) -%}
+<figure class="chart" tabindex="0" aria-label="{{ title }}">
+  {% if legend %}<div class="ch-legend">{% for slot, name in legend %}<span><i class="ch-key s{{ slot }}"></i>{{ name }}</span>{% endfor %}</div>{% endif %}
+  <div class="chart-plot"></div>
+  <script type="application/json">{{ c.spec|tojson }}</script>
+  {% if caption %}<figcaption class="muted small">{{ caption }}</figcaption>{% endif %}
+  {% if c.table.rows %}
+  <details class="chart-table">
+    <summary>Data table</summary>
+    <div class="table-scroll"><table class="compact">
+      <thead><tr>{% for h in c.table.head %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in c.table.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table></div>
+  </details>
+  {% endif %}
+</figure>
+{%- endmacro %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Review: {{ a.headline }}{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('newsroom_web.queue') }}">← Newsroom</a></p>
+<div class="page-head"><div><h1>{{ a.headline }}</h1>
+  <p class="muted">{{ a.league|upper }} {{ a.kind_label }} · status <strong>{{ a.status }}</strong> · written {{ a.created_at|kickoff }} by {{ a.model }}
+  · <a href="{{ url_for('newsroom_web.review_preview', article_id=a.id) }}">preview as readers see it</a>
+  {% if a.status == 'published' %}· <a href="{{ url_for('newsroom_web.article_page', league=a.league, slug=a.slug) }}">view live</a>{% endif %}</p></div></div>
+
+{% set problems = (a.checks or {}).get('problems') or [] %}
+{% if problems %}
+<div class="panel review-problems"><strong>Checks flagged {{ problems|length }} problem(s) after {{ (a.checks or {}).get('attempts') }} attempt(s):</strong>
+  <ul>{% for p in problems %}<li>{{ p }}</li>{% endfor %}</ul></div>
+{% elif a.kind == 'editorial' %}<div class="panel review-problems">All automatic checks passed. Editorials always need a human read.</div>{% endif %}
+
+<div class="review-grid">
+  <form method="post" class="panel review-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Headline <input name="headline" value="{{ a.headline }}" maxlength="200"></label>
+    <label>Dek <input name="dek" value="{{ a.dek or '' }}" maxlength="400"></label>
+    <label>Body <textarea name="body" rows="24">{{ a.body }}</textarea></label>
+    <div class="review-actions">
+      {% if a.status != 'published' %}<button name="action" value="publish" class="primary">Save and publish</button>{% endif %}
+      <button name="action" value="save">Save edits</button>
+      {% if a.status == 'published' %}<button name="action" value="unpublish">Unpublish</button>{% endif %}
+      {% if a.status != 'rejected' %}<button name="action" value="reject" class="danger">Reject</button>{% endif %}
+    </div>
+  </form>
+  <div>
+    <h2>Fact sheet the writer was given</h2>
+    <pre class="panel facts-sheet">{{ facts_text }}</pre>
+  </div>
+</div>
+{% endblock %}

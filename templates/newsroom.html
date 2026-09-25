@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Newsroom{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Newsroom</h1><p class="muted">Drafts that failed a check, and every editorial, wait here for review.</p></div></div>
+{% for status, title in [('review', 'Needs review'), ('published', 'Recently published'), ('rejected', 'Rejected')] %}
+  <h2>{{ title }} <small class="muted">· {{ queue[status]|length }}</small></h2>
+  {% if queue[status] %}
+  <div class="table-scroll"><table class="compact">
+    <thead><tr><th>Story</th><th>League</th><th>Kind</th><th>Written</th>{% if status == 'review' %}<th>Why it's here</th>{% endif %}</tr></thead>
+    <tbody>
+    {% for a in queue[status] %}
+      <tr>
+        <td><a href="{{ url_for('newsroom_web.review', article_id=a.id) }}"><strong>{{ a.headline }}</strong></a></td>
+        <td>{{ a.league|upper }}</td><td>{{ a.kind_label }}</td><td class="nowrap muted">{{ a.created_at|kickoff }}</td>
+        {% if status == 'review' %}<td class="small">{% if a.kind == 'editorial' and not (a.checks.problems if a.checks else []) %}Editorials always need review{% else %}{{ ((a.checks or {}).get('problems') or [])|length }} problem(s){% endif %}</td>{% endif %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">None.</p>{% endif %}
+{% endfor %}
+{% endblock %}

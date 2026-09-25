@@ -343,6 +343,58 @@ CREATE TABLE IF NOT EXISTS game_features (
     PRIMARY KEY (league, game_id)
 );
 
+-- ESPN player box score per game (live.py while live and at the final; espn_boxscores.py backfills), as
+-- [{team_id, categories: [{name, title, labels, players: [{id, name, stats}], totals}]}] in ESPN's own columns.
+CREATE TABLE IF NOT EXISTS game_boxscores (
+    league      TEXT        NOT NULL,
+    game_id     TEXT        NOT NULL,
+    data        JSONB       NOT NULL,
+    final       BOOLEAN     NOT NULL DEFAULT false,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, game_id)
+);
+
+-- Newsroom articles (newsroom.py): previews, recaps, editorials. The web app's read-only role may only
+-- change review fields (approve / reject / edit from /newsroom).
+CREATE TABLE IF NOT EXISTS articles (
+    id            BIGSERIAL   PRIMARY KEY,
+    league        TEXT        NOT NULL,
+    kind          TEXT        NOT NULL,          -- preview, recap, editorial
+    game_id       TEXT,
+    topic_key     TEXT        NOT NULL,          -- game_id for game stories, e.g. power-2026-w3 for editorials
+    season        INTEGER,
+    week          INTEGER,
+    slug          TEXT        NOT NULL UNIQUE,
+    headline      TEXT        NOT NULL,
+    dek           TEXT,
+    body          TEXT        NOT NULL,          -- plain paragraphs separated by blank lines
+    facts         JSONB       NOT NULL,          -- the fact sheet the writer was given
+    checks        JSONB,                         -- {"problems": [...], "attempts": n}
+    status        TEXT        NOT NULL,          -- published, review, rejected
+    model         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at  TIMESTAMPTZ,
+    reviewed_at   TIMESTAMPTZ,
+    UNIQUE (league, kind, topic_key)
+);
+CREATE INDEX IF NOT EXISTS articles_list_idx ON articles (league, status, published_at DESC);
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT ON articles TO web_ro;
+        GRANT UPDATE (status, headline, dek, body, updated_at, published_at, reviewed_at) ON articles TO web_ro;
+    END IF;
+END $$;
+
+-- Explainer data written by explain.py after training (feature-family importance, ...).
+CREATE TABLE IF NOT EXISTS model_explain (
+    league      TEXT        NOT NULL,
+    model       TEXT        NOT NULL,
+    data        JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (league, model)
+);
+
 -- Pre-game predictions written by batch jobs (elo.py, ...); the web app only reads these.
 CREATE TABLE IF NOT EXISTS predictions (
     league            TEXT        NOT NULL,
@@ -362,6 +414,9 @@ def database_url():
     url = os.getenv("DATABASE_URL")
     if url:
         return url
+    if "POSTGRES_USER" not in os.environ:
+        raise SystemExit("No database settings: secrets live in Kubernetes now. Run through ./kenv, e.g. "
+                         "./kenv dev .venv/bin/python <script>.py (or ./kenv prod ...).")
     user = os.environ["POSTGRES_USER"]
     password = os.environ["POSTGRES_PASSWORD"]
     host = os.getenv("POSTGRES_HOST", "localhost")

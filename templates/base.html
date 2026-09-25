@@ -14,6 +14,7 @@
   <meta property="og:image" content="{{ url_for('static', filename='images/sideline-wire-logo.png', _external=True, _scheme='https') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="{{ url_for('static', filename='live.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='charts.js') }}" defer></script>
 </head>
 <body>
   {% set ticker_blocks = ticker() %}
@@ -21,7 +22,7 @@
   <div class="ticker" aria-label="Scoreboard">
     <div class="ticker-track">
       {% for block in ticker_blocks %}
-        <a class="tk-league" href="{{ url_for('slate', league=block.league) }}">{{ block.label }}</a>
+        <a class="tk-league" href="{{ url_for('league_home', league=block.league) }}">{{ block.label }}</a>
         {% for g in block.games %}
           <a class="tk-game tk-{{ g.ui_state }}" href="{{ url_for('game', league=block.league, game_id=g.game_id) }}"
              data-live-game="{{ g.game_id }}" data-league="{{ block.league }}" data-state="{{ g.ui_state }}"
@@ -60,20 +61,21 @@
       </a>
       <nav>
         {% for key, name in leagues.items() %}
-          <a href="{{ url_for('slate', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
+          <a href="{{ url_for('league_home', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
         {% endfor %}
         <a href="{{ url_for('models') }}" class="{{ 'active' if request.endpoint == 'models' }}">Models</a>
+        <a href="{{ url_for('how_it_works') }}" class="{{ 'active' if request.endpoint == 'how_it_works' }}">How it works</a>
       </nav>
     </div>
     {% if league %}
     <div class="subnav">
       <div class="wrap">
-        {% set items = [('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
+        {% set items = [('league_home', 'Home'), ('slate', 'Games'), ('newsroom_web.articles_page', 'News'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
              + ([('rankings_page', 'Rankings')] if league == 'cfb' else []) + [('preseason_page', 'Preseason')]
              + [('stats_page', 'Stats'), ('ratings', 'Ratings')] %}
         {% for endpoint, label in items %}
           <a href="{{ url_for(endpoint, league=league) }}"
-             class="{{ 'active' if request.endpoint == endpoint or (endpoint == 'stats_page' and request.endpoint == 'stats_leaders_page') or (endpoint == 'teams_page' and request.endpoint == 'team_page') or (endpoint == 'slate' and request.endpoint == 'game') }}">{{ label }}</a>
+             class="{{ 'active' if request.endpoint == endpoint or (endpoint == 'stats_page' and request.endpoint == 'stats_leaders_page') or (endpoint == 'teams_page' and request.endpoint == 'team_page') or (endpoint == 'slate' and request.endpoint == 'game') or (endpoint == 'newsroom_web.articles_page' and request.endpoint == 'newsroom_web.article_page') }}">{{ label }}</a>
         {% endfor %}
       </div>
     </div>

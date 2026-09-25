@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% from "_charts.html" import chart %}
+{% block title %}How our models work{% endblock %}
+{% block content %}
+{% set nfl, cfb = data.nfl, data.cfb %}
+<article class="explainer">
+  <header class="explainer-head">
+    <p class="kicker">Explainer</p>
+    <h1>How our models work</h1>
+    <p class="dek">Every prediction on this site comes from box scores and play-by-play, turned into team ratings and fed to models that were tested on seasons they never saw. Here's what goes in, what comes out, and how often it's right.</p>
+  </header>
+
+  <div class="cards explainer-stats">
+    {% for key in ('nfl', 'cfb') %}{% set d = data[key] %}
+      {% if d.scores.ind %}
+      <div class="card"><span>{{ d.name }} winners picked</span><strong>{{ d.scores.ind.accuracy|pct }}</strong>
+        <small class="muted">{{ d.independent }} model, {{ d.games|num(0) }} test games · Vegas {{ d.scores.vegas.accuracy|pct }}</small></div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <section>
+    <h2>1. Elo: a rating for every team</h2>
+    <p>Every team starts at 1500. After each game, the winner takes rating points from the loser: more for an upset, more for a lopsided score. Between seasons every rating slides part of the way back toward average, because rosters turn over.</p>
+    <ul class="facts">
+      {% for key in ('nfl', 'cfb') %}{% set e = data[key].elo %}
+        {% if e %}<li><strong>{{ data[key].name }}:</strong> 100 Elo points is worth about {{ (100 * e.m)|num }} points on the scoreboard. Home field is {{ e.p.hfa }} Elo (about {{ (e.p.hfa * e.m)|num }} points), and ratings regress {{ (e.p.regress * 100)|round|int }}% toward average each offseason.</li>{% endif %}
+      {% endfor %}
+    </ul>
+    {% if nfl.elo_chart and nfl.top.team %}
+      {{ chart(nfl.elo_chart, nfl.top.team.display_name ~ ' Elo rating by game', 'The NFL\'s current No. 1, ' ~ nfl.top.team.display_name ~ ', going into each game of the last two seasons.') }}
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>2. EPA: how efficient each play was</h2>
+    <p>A 6-yard gain on 3rd-and-5 is worth more than 6 yards on 3rd-and-10. <strong>Expected points added (EPA)</strong> captures that: every down, distance and field position has an expected number of points for the offense, and a play's EPA is how much it raised or lowered that expectation. Success rate is the share of plays with positive EPA.</p>
+    <p>Raw averages flatter teams with weak schedules, so we fit every play in a season at once with a ridge regression that credits each offense and defense for its opponent. The result is <strong>opponent-adjusted EPA per play</strong>, the offense and defense numbers you'll see on team pages. Quarterbacks get their own rating from the same data, so a starter's injury moves the forecast.</p>
+  </section>
+
+  <section>
+    <h2>3. The prediction models</h2>
+    <p>Before each game we build a few hundred features: both teams' Elo, recent and season scoring margin, adjusted EPA and success rate, quarterback ratings, rest, travel, weather and, in college, recruiting and roster talent. Three models turn those into a win probability, a margin and a total:</p>
+    <ul class="facts">
+      <li><strong>Linear</strong>, a regression on about a dozen strong features. It's our pick for the NFL, where there isn't enough data to trust anything fancier.</li>
+      <li><strong>XGBoost</strong>, gradient-boosted trees on every feature. It's our pick for college, where 130+ teams and a much wider range of talent give it room to find interactions.</li>
+      <li><strong>Market-adjusted</strong> starts from the closing betting line and learns small corrections. It's the most accurate, but it isn't independent of Vegas.</li>
+    </ul>
+    <p>Neither independent model sees a betting line, so when they disagree with Vegas, that's a genuine difference of opinion. Those disagreements are what we feature on the league pages.</p>
+    <h3 class="chart-head">What the XGBoost model leans on</h3>
+    <div class="chart-grid-2">
+      {% for key in ('nfl', 'cfb') %}{% if data[key].families %}
+        <div><p class="muted small chart-sub">{{ data[key].name }}</p>
+        {{ chart(data[key].families, data[key].name ~ ' XGBoost margin model: share of gain by feature family') }}</div>
+      {% endif %}{% endfor %}
+    </div>
+    <p class="muted small">Share of the margin model's total split gain, grouped by family. Features that measure the same thing, such as Elo and recent scoring margin, share credit, so read this as where the model looks, not as a ranking of what matters in football.</p>
+  </section>
+
+  <section>
+    <h2>4. Preseason ratings</h2>
+    <p>Before a snap is played, each team gets a rating in points versus an average team, built from five sources: the last two seasons of efficiency, incoming talent (recruiting in college, the draft in the NFL), returning production, player movement (the transfer portal, free agency and trades) and coaching changes. For college we also estimate each team's chance of a top-10 season, using what past elite teams had in common.</p>
+    {% set p = cfb.pre_top %}
+    {% if p and p.contributions %}
+      {{ chart(contributions_chart('cfb', p.contributions), (p.team.display_name if p.team else 'Top team') ~ ' preseason rating by source',
+               'College football\'s top preseason team, ' ~ (p.team.display_name if p.team else '') ~ ' (' ~ ('%+.1f'|format(p.rating)) ~ ' vs an average FBS team), broken down by source.') }}
+    {% endif %}
+    <p>See every team: <a href="{{ url_for('preseason_page', league='nfl') }}">NFL</a> · <a href="{{ url_for('preseason_page', league='cfb') }}">college</a>.</p>
+  </section>
+
+  <section>
+    <h2>5. How good is it?</h2>
+    <p>Models are trained on 2006–2021, tuned on 2022, and scored only on {{ first_season }} onward: games they never saw. Two honest findings:</p>
+    <ul class="facts">
+      {% for key in ('nfl', 'cfb') %}{% set d = data[key] %}{% if d.scores.ind and d.scores.vegas %}
+        <li><strong>{{ d.name }}:</strong> {{ d.independent }} picks {{ d.scores.ind.accuracy|pct }} of winners and misses the final margin by {{ d.scores.ind.margin_mae|num }} points on average. The Vegas closing line: {{ d.scores.vegas.accuracy|pct }} and {{ d.scores.vegas.margin_mae|num }}. Against the spread, the independent model is {{ (d.scores.ind.ats * 100)|num }}%. Break-even is 52.4%.</li>
+      {% endif %}{% endfor %}
+    </ul>
+    <p><strong>Vegas is better than we are</strong>, and so far no model on this site beats the closing line against the spread. Our models are close to the line, not ahead of it. They're useful for understanding games, not for betting.</p>
+    <p>The other test is calibration. When we say 70%, does that team win about 70% of the time?</p>
+    <div class="chart-grid-2">
+      {% for key in ('nfl', 'cfb') %}{% if data[key].calibration %}
+        <div><p class="muted small chart-sub">{{ data[key].name }}</p>
+        {{ chart(data[key].calibration, data[key].name ~ ' calibration', none, data[key].calibration.legend) }}</div>
+      {% endif %}{% endfor %}
+    </div>
+    <p class="muted small">Test-season games grouped by predicted home win chance. Points on the diagonal mean the probabilities can be taken at face value. Full scorecard: <a href="{{ url_for('models') }}">how the models do</a>.</p>
+  </section>
+</article>
+{% endblock %}
