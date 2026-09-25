@@ -405,8 +405,6 @@ figure.chart figcaption { margin-top: 6px; }
 .article-body p { font-size: 17px; line-height: 1.65; margin: 0 0 16px; }
 .article-game { max-width: 380px; margin: 4px 0 20px; }
 .byline { margin-top: 10px; }
-.ai-note { margin: 28px 0 16px; padding: 14px 16px; border-left: 3px solid var(--accent); background: var(--accent-soft);
-  border-radius: 0 8px 8px 0; font-size: 14px !important; line-height: 1.55; }
 .pill-nav { display: flex; gap: 4px; flex-wrap: wrap; }
 .pill-nav a { padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); }
 .pill-nav a.active { color: var(--text); background: var(--accent-soft); border-color: transparent; }

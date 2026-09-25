@@ -74,15 +74,6 @@
     {{ chart(wp, g.home_abbr ~ ' win probability over the game', g.home_abbr ~ ' win probability after each play (ESPN).') }}
   {% endif %}
 
-  <aside class="ai-note">
-    {% set by_openai = (a.model or '').startswith('gpt') %}
-    <strong>How this story was made.</strong> This {{ 'column' if a.kind == 'ratings' else a.kind_label|lower }} was written by an AI model
-    ({{ "OpenAI's " ~ a.model if by_openai else "running on our own hardware" }}), using only a fact sheet built from
-    {% if a.kind in ('recap', 'preview') %}our game data and ESPN's box score{% else %}our ratings and results{% endif %}.
-    Before publishing, every number and name in it was checked against that fact sheet{% if a.kind in ('editorial', 'ratings') %},
-    and an editor reviewed it{% endif %}. Spot an error? It's on us. See <a href="{{ url_for('how_it_works') }}">how our models work</a>.
-  </aside>
-
   {% if g %}<p><a href="{{ url_for('game', league=league, game_id=g.game_id) }}">Full game page: box score, models, sportsbooks →</a></p>{% endif %}
 
   {% if related %}
