@@ -414,6 +414,9 @@ def database_url():
     url = os.getenv("DATABASE_URL")
     if url:
         return url
+    if "POSTGRES_USER" not in os.environ:
+        raise SystemExit("No database settings: secrets live in Kubernetes now. Run through ./kenv, e.g. "
+                         "./kenv dev .venv/bin/python <script>.py (or ./kenv prod ...).")
     user = os.environ["POSTGRES_USER"]
     password = os.environ["POSTGRES_PASSWORD"]
     host = os.getenv("POSTGRES_HOST", "localhost")
