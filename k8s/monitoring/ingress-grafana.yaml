@@ -1,0 +1,26 @@
+# grafana.sidelinewire.com: Cloudflare -> NPM (public TLS) -> https://192.168.10.9:8043 (Traefik "grafana" entrypoint,
+# default self-signed cert, like dev/prod) -> Grafana. Grafana's own login protects it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: grafana
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - grafana.sidelinewire.com
+  rules:
+    - host: grafana.sidelinewire.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kube-prometheus-stack-grafana
+                port:
+                  number: 80

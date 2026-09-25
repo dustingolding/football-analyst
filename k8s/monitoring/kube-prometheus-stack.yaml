@@ -1,6 +1,7 @@
 # Prometheus + Grafana + node/kube-state exporters, installed by k3s's helm-controller (no helm CLI needed).
 #   kubectl apply -f k8s/monitoring/   (namespace first; Secrets grafana-admin and grafana-postgres are created by hand)
-# Grafana: http://192.168.10.9:30300 (LAN only; NodePort). Dashboards are ConfigMaps labeled grafana_dashboard=1.
+# Grafana: https://grafana.sidelinewire.com (NPM -> Traefik entrypoint :8043, ingress-grafana.yaml); also
+# http://192.168.10.9:30300 on the LAN (NodePort). Dashboards are ConfigMaps labeled grafana_dashboard=1.
 apiVersion: helm.cattle.io/v1
 kind: HelmChart
 metadata:
@@ -56,6 +57,9 @@ spec:
         storageClassName: local-path
         size: 2Gi
       grafana.ini:
+        server:
+          domain: grafana.sidelinewire.com
+          root_url: https://grafana.sidelinewire.com
         analytics: {reporting_enabled: false, check_for_updates: false}
         users: {allow_sign_up: false}
         auth.anonymous: {enabled: false}
