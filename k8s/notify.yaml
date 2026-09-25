@@ -34,6 +34,7 @@ spec:
                 optional: true
           env:
             - {name: OPENBLAS_NUM_THREADS, value: "1"}
+            - {name: SITE_ENV, value: "${SITE_ENV}"}  # news alerts link to this site's stories
           resources:
             requests: {cpu: 20m, memory: 64Mi}
             limits: {memory: 192Mi}

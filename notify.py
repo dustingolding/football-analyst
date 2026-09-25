@@ -5,6 +5,7 @@ last state it saw (push_game_state) and alerts the devices following either team
     kickoff   pre -> in
     score     a score went up (extra points and two-point tries are folded into the next alert)
     final     -> post
+    news      a story about a followed team was published (newsroom articles, via article_teams)
 Each alert is inserted into push_events before it's sent, so a restart or retry never repeats one.
 A game seen for the first time is recorded without alerts, so starting up mid-game or after
 downtime doesn't replay the day, and changes older than STALE are recorded but not sent.
@@ -19,6 +20,7 @@ and logs what it would have sent.
 """
 
 import argparse
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -29,8 +31,12 @@ from push import Apns
 
 EVERY = 20
 STALE = timedelta(minutes=15)
-PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final"}
-EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "test": 3600}
+PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final", "news": "alert_news"}
+EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "news": 12 * 3600, "test": 3600}
+NEWS_WINDOW = timedelta(hours=2)  # only stories published this recently alert (no backlog blast on first run)
+SITE = {"prod": "https://sidelinewire.com", "dev": "https://dev.sidelinewire.com"}.get(os.getenv("SITE_ENV", "prod"),
+                                                                                      "https://sidelinewire.com")
+NEWS_KIND = {"preview": "Preview", "recap": "Recap", "ratings": "Power Ratings", "editorial": "Column"}
 
 GAMES = """
     SELECT l.league, l.game_id, l.state, l.detail, l.home_score, l.away_score, l.last_play, l.broadcast,
@@ -110,7 +116,7 @@ def recipients(conn, league, team_ids, kind):
         (league, list(team_ids))).fetchall()
 
 
-def deliver(conn, apns, devices, league, game_id, kind, title, body):
+def deliver(conn, apns, devices, league, game_id, kind, title, body, data=None, thread_id=None):
     """Send one alert to each device; returns (sent, failed). Dead tokens are switched off."""
     sent = failed = 0
     for install_id, token, environment, bundle_id in devices:
@@ -118,9 +124,9 @@ def deliver(conn, apns, devices, league, game_id, kind, title, body):
             print(f"[notify] (no APNs key) would send {kind} to {install_id}: {title} | {body}", flush=True)
             continue
         result = apns.send(token, environment, bundle_id, {"title": title, "body": body},
-                           data={"league": league, "game_id": game_id, "kind": kind},
+                           data=data or {"league": league, "game_id": game_id, "kind": kind},
                            collapse_id=f"{league}-{game_id}-score" if kind == "score" else None,
-                           thread_id=f"{league}-{game_id}", expires_in=EXPIRES[kind])
+                           thread_id=thread_id or f"{league}-{game_id}", expires_in=EXPIRES[kind])
         if result.ok:
             sent += 1
             continue
@@ -168,6 +174,61 @@ def run_pass(conn, apns, dry_run=False):
     return alerts
 
 
+NEWS = """
+    SELECT a.id, a.league, a.kind, a.slug, a.headline, a.dek, a.game_id, a.published_at,
+           array_agg(at.team_id) FILTER (WHERE at.role = 'game' OR a.kind IN ('ratings', 'editorial')) AS alert_teams,
+           array_agg(at.team_id) AS all_teams
+    FROM articles a JOIN article_teams at ON at.article_id = a.id
+    WHERE a.status = 'published' AND a.published_at > now() - %s
+      AND NOT EXISTS (SELECT 1 FROM push_events e WHERE e.kind = 'news' AND e.detail = 'article-' || a.id)
+    GROUP BY a.id ORDER BY a.published_at
+"""
+
+
+def news_pass(conn, apns, dry_run=False):
+    """Alert followers when a story about their team publishes: previews and recaps go to followers of the two
+    teams in the game, power ratings and columns to followers of the teams they discuss. Teams only mentioned in
+    passing (a previous opponent) don't alert. Tap opens the story (article_id / slug / url in the payload)."""
+    names = team_names(conn)
+    cur = conn.execute(NEWS, (NEWS_WINDOW,))
+    columns = [d.name for d in cur.description]
+    alerts = 0
+    for row in cur.fetchall():
+        a = dict(zip(columns, row))
+        teams = [t for t in (a["alert_teams"] or []) if t]
+        if not teams:
+            continue
+        label = NEWS_KIND.get(a["kind"], "Story")
+        if a["kind"] in ("preview", "recap") and len(teams) == 2:
+            abbrs = " vs. ".join(names.get((a["league"], t), {"abbr": t})["abbr"] for t in teams)
+            title = f"{label}: {abbrs}"
+        else:
+            title = f"{a['league'].upper()} {label}"
+        body = a["headline"]
+        data = {"league": a["league"], "kind": "news", "article_kind": a["kind"], "article_id": str(a["id"]),
+                "slug": a["slug"], "url": f"{SITE}/{a['league']}/news/{a['slug']}", "team_ids": a["all_teams"],
+                "game_id": a["game_id"]}
+        devices = recipients(conn, a["league"], teams, "news")
+        if dry_run:
+            print(f"[notify] dry run: news {a['league']} article {a['id']} -> {len(devices)} device(s): {title} | {body}",
+                  flush=True)
+            continue
+        claimed = conn.execute(
+            "INSERT INTO push_events (league, game_id, kind, detail, title, body) VALUES (%s, %s, 'news', %s, %s, %s) "
+            "ON CONFLICT DO NOTHING RETURNING 1",
+            (a["league"], a["game_id"] or "-", f"article-{a['id']}", title, body)).fetchone()
+        if not claimed:
+            continue
+        sent, failed = deliver(conn, apns, devices, a["league"], a["game_id"] or "-", "news", title, body,
+                               data=data, thread_id=f"news-{a['league']}")
+        conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE kind = 'news' AND detail = %s",
+                     (sent, failed, f"article-{a['id']}"))
+        alerts += 1
+        print(f"[notify] news {a['league']} article {a['id']}: {title} | {body} -> {sent} sent, {failed} failed",
+              flush=True)
+    return alerts
+
+
 def send_test(conn, apns, install_id):
     device = conn.execute("SELECT install_id, apns_token, environment, bundle_id FROM push_devices "
                           "WHERE install_id = %s", (install_id.lower(),)).fetchone()
@@ -196,10 +257,12 @@ def main():
         if args.test:
             return send_test(conn, apns, args.test)
         if args.dry_run:
-            return run_pass(conn, apns, dry_run=True)
+            run_pass(conn, apns, dry_run=True)
+            return news_pass(conn, apns, dry_run=True)
         while True:
             try:
                 run_pass(conn, apns)
+                news_pass(conn, apns)
             except psycopg.OperationalError:
                 raise  # connection lost: exit so Kubernetes restarts the pod with a fresh one
             except Exception as exc:  # anything else: keep the service up; the next pass retries

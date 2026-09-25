@@ -419,10 +419,16 @@ def models():
         for label, note, metrics in m["rows"]]} for league, m in site.compute_metrics().items()}, max_age=3600)
 
 
-def article_item(a, body=False):
+def team_tag(t):
+    return {"id": t["team_id"], "name": t["name"], "short_name": t["short"], "abbreviation": t["abbr"], "logo": t["logo"],
+            "role": t["role"]}
+
+
+def article_item(a, body=False, tags=None):
     item = {"id": str(a["id"]), "slug": a["slug"], "league": a["league"], "kind": a["kind"], "game_id": a["game_id"],
             "headline": a["headline"], "dek": a["dek"], "published_at": iso(a["published_at"]),
-            "url": f"https://{request.host}/{a['league']}/news/{a['slug']}"}
+            "url": f"https://{request.host}/{a['league']}/news/{a['slug']}",
+            "teams": [team_tag(t) for t in (tags if tags is not None else web_data.article_team_tags([a["id"]]).get(a["id"], []))]}
     if body:
         item["paragraphs"] = [p.strip() for p in (a.get("body") or "").split("\n\n") if p.strip()]
     return item
@@ -435,8 +441,58 @@ def articles(league):
     if kind and kind not in web_data.KIND_LABELS:
         raise ApiError(400, "bad_request", f"kind must be one of {list(web_data.KIND_LABELS)}.")
     limit = min(max(request.args.get("limit", 20, type=int), 1), 50)
-    rows = web_data.latest_articles(league, limit, kind, max(request.args.get("offset", 0, type=int), 0))
-    return respond([article_item(a) for a in rows], max_age=120)
+    team_ids = team_ids_arg()
+    if team_ids:
+        ids = {i["article_id"] for i in web_data.news_feed(league, team_ids, None, 200) if i["source"] == "sidelinewire"}
+        rows = [a for a in web_data.latest_articles(league, 200, kind) if a["id"] in ids][:limit]
+    else:
+        rows = web_data.latest_articles(league, limit, kind, max(request.args.get("offset", 0, type=int), 0))
+    tags = web_data.article_team_tags([a["id"] for a in rows])
+    return respond([article_item(a, tags=tags.get(a["id"], [])) for a in rows], max_age=120)
+
+
+def team_ids_arg():
+    raw = request.args.get("team_id") or request.args.get("team_ids") or ""
+    ids = [t for t in raw.replace(" ", "").split(",") if t]
+    if any(not t.isdigit() for t in ids) or len(ids) > 50:
+        raise ApiError(400, "bad_request", "team_id must be a comma-separated list of team ids (at most 50).")
+    return ids
+
+
+def news_item(i):
+    out = {"id": i["id"], "source": i["source"], "kind": i["kind"], "headline": i["headline"], "summary": i["summary"],
+           "published_at": iso(i["published_at"]), "teams": [team_tag(t) for t in i["teams"]]}
+    if i["source"] == "sidelinewire":
+        out.update(article_id=str(i["article_id"]), slug=i["slug"],
+                   url=f"https://{request.host}/{request.view_args['league']}/news/{i['slug']}")
+    else:
+        out["url"] = i["url"]
+    return out
+
+
+@bp.get("/<league>/news")
+def news(league):
+    """Team news for the app: our stories plus ESPN headlines, each tagged with its teams. Sync with ?since=<the
+    newest published_at you have>; filter with ?team_id=1,2,3 (a user's followed teams)."""
+    league_or_error(league)
+    since = request.args.get("since")
+    if since:
+        try:
+            since = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise ApiError(400, "bad_request", "since must be an ISO 8601 time, e.g. 2026-09-25T18:00:00Z.") from None
+    limit = min(max(request.args.get("limit", 50, type=int), 1), 200)
+    items = web_data.news_feed(league, team_ids_arg(), since, limit)
+    return respond([news_item(i) for i in items], max_age=60,
+                   newest=iso(items[0]["published_at"]) if items else None)
+
+
+@bp.get("/<league>/teams/<team_id>/news")
+def team_news_feed(league, team_id):
+    league_or_error(league)
+    team_or_error(league, team_id)
+    limit = min(max(request.args.get("limit", 30, type=int), 1), 100)
+    return respond([news_item(i) for i in web_data.news_feed(league, [team_id], None, limit)], max_age=120)
 
 
 @bp.get("/<league>/articles/<slug>")
@@ -455,7 +511,7 @@ APNS_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,200}$")
 BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
 TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_FOLLOWS = 200
-ALERTS = ("kickoff", "scoring", "final")
+ALERTS = ("kickoff", "scoring", "final", "news")  # push_devices.alert_<name>; missing = on
 
 
 def install_id_or_error(install_id):
@@ -509,13 +565,14 @@ def register_device(install_id):
             conn.execute(
                 """
                 INSERT INTO push_devices (install_id, apns_token, environment, bundle_id, timezone, alert_kickoff,
-                                          alert_scoring, alert_final, api_key_prefix)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                          alert_scoring, alert_final, alert_news, api_key_prefix)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (install_id) DO UPDATE SET
                     apns_token = EXCLUDED.apns_token, environment = EXCLUDED.environment,
                     bundle_id = EXCLUDED.bundle_id, timezone = EXCLUDED.timezone,
                     alert_kickoff = EXCLUDED.alert_kickoff, alert_scoring = EXCLUDED.alert_scoring,
-                    alert_final = EXCLUDED.alert_final, api_key_prefix = EXCLUDED.api_key_prefix,
+                    alert_final = EXCLUDED.alert_final, alert_news = EXCLUDED.alert_news,
+                    api_key_prefix = EXCLUDED.api_key_prefix,
                     disabled_at = NULL, last_error = NULL, updated_at = now()
                 """,
                 (install_id, token, environment, bundle_id, timezone_name, *switches, g.get("api_key_prefix")))

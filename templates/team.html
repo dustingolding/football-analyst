@@ -54,6 +54,25 @@
       {{ chart(elo_chart, team.display_name ~ ' Elo rating by game', 'Rating going into each game of ' ~ (season - 1) ~ ' and ' ~ season ~ '. Ratings regress toward the mean between seasons.') }}
       {% endif %}
 
+      {% set ours, espn = news %}
+      {% if ours or espn %}
+      <h2>News</h2>
+      <div class="story-list team-news">
+        {% for a in ours %}
+          <a class="story" href="{{ url_for('newsroom_web.article_page', league=league, slug=a.slug) }}">
+            <span class="story-kind">{{ a.kind_label }} · <span class="muted">{{ a.published_at|kickoff }}</span></span>
+            <strong>{{ a.headline }}</strong>
+          </a>
+        {% endfor %}
+        {% for n in espn[:6 - ours|length] if n.url %}
+          <a class="story external" href="{{ n.url }}" target="_blank" rel="noopener">
+            <span class="story-kind">ESPN · <span class="muted">{{ n.published|kickoff }}</span></span>
+            <strong>{{ n.headline }}</strong>
+          </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+
       {% if recent %}
       <h2>Recent results</h2>
       <div class="table-scroll"><table>

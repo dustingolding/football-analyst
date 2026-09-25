@@ -335,6 +335,8 @@ CREATE TABLE IF NOT EXISTS push_devices (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_news BOOLEAN NOT NULL DEFAULT true;
+
 CREATE TABLE IF NOT EXISTS push_follows (
     install_id  TEXT NOT NULL REFERENCES push_devices (install_id) ON DELETE CASCADE,
     league      TEXT NOT NULL,
@@ -448,6 +450,22 @@ DO $$ BEGIN
         GRANT SELECT, DELETE ON articles TO web_ro;
         GRANT UPDATE (status, headline, dek, body, updated_at, published_at, reviewed_at, regen_note,
                       regen_requested_at) ON articles TO web_ro;
+    END IF;
+END $$;
+
+-- Teams each article is about (web_data.tag_article): 'game' = the two teams of a preview/recap, 'mentioned' = named
+-- in the story. Drives team pages' news, the API's team news feed and team links in stories.
+CREATE TABLE IF NOT EXISTS article_teams (
+    article_id  BIGINT  NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
+    league      TEXT    NOT NULL,
+    team_id     TEXT    NOT NULL,
+    role        TEXT    NOT NULL,        -- game, mentioned
+    PRIMARY KEY (article_id, team_id)
+);
+CREATE INDEX IF NOT EXISTS article_teams_team_idx ON article_teams (league, team_id);
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT, INSERT, DELETE ON article_teams TO web_ro;  -- /admin edits re-tag the story
     END IF;
 END $$;
 

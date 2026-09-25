@@ -14,7 +14,13 @@
 
   {% if g %}<div class="article-game">{{ game_card(league, g) }}</div>{% endif %}
 
-  <div class="article-body">{{ a.body|article_body }}</div>
+  {% if tags %}
+  <div class="team-tags">
+    {% for t in tags %}<a class="team-tag {{ t.role }}" href="{{ url_for('team_page', league=league, team_id=t.team_id) }}">{% if t.logo %}<img src="{{ t.logo }}" alt="" loading="lazy">{% endif %}{{ t.short }}</a>{% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="article-body">{{ a.body|article_body(league, tags) }}</div>
 </article>
 
 {% set table = (a.facts or {}).get('_table') %}

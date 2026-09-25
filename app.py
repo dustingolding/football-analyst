@@ -576,6 +576,7 @@ def team_page(league, team_id):
         draft=web_data.nfl_moves(season, team_id)[2] if tab == "offseason" and league == "nfl" else [],
         labels=GROUP_LABELS[league],
         elo_chart=charts.elo_history(league, team_id, season) if tab == "home" else None,
+        news=web_data.team_news(league, team_id, 6) if tab == "home" else ([], []),
     )
 
 

@@ -777,6 +777,8 @@ def update_article(article_id, status=None, headline=None, dek=None, body=None):
             sets.append("published_at = COALESCE(published_at, now())")
     with connect() as conn:
         conn.execute(f"UPDATE articles SET {', '.join(sets)} WHERE id = %s", (*params, article_id))
+        if body is not None or headline is not None or dek is not None:
+            tag_article(conn, article_id)
 
 
 BOX_MAIN = ("passing", "rushing", "receiving")
@@ -855,3 +857,113 @@ def delete_article(article_id):
 def clear_cache():
     """Admin changes show up on the site right away (this process; other web pods catch up within CACHE_SECONDS)."""
     _cache.clear()
+
+
+# --- Team tags (article_teams): which teams a story is about, for team pages, the app's news feed and linking ------
+
+def team_aliases(league):
+    """Names a story can use for each team -> team_id, keeping only names that point to exactly one team in the
+    league (so 'Tigers' or 'Bulldogs' never tag anyone). Longest names are matched first ('Georgia Tech' before
+    'Georgia'). Abbreviations are left out: they collide with betting-line text like 'TEX -4.5'."""
+    def build():
+        owners = defaultdict(set)
+        for t in query("SELECT team_id, display_name, short_name, name, location FROM teams WHERE league = %s", (league,)):
+            for n in {t["display_name"], t["short_name"], t["name"], t["location"]}:
+                if n and len(n) > 2:
+                    owners[n].add(t["team_id"])
+        return {n: next(iter(ids)) for n, ids in owners.items() if len(ids) == 1}
+    return cached(("aliases", league), build)
+
+
+def _alias_pattern(aliases):
+    import re  # noqa: PLC0415
+    names = sorted(aliases, key=len, reverse=True)
+    # a name followed by a venue word is a place, not the team ("Ohio Stadium" is Ohio State's home, not Ohio)
+    return re.compile(r"(?<![\w'])(" + "|".join(re.escape(n) for n in names) + r")(?![\w-])"
+                      r"(?! (?:Stadium|Field|Arena|Dome|Coliseum|Center|Bowl)\b)")
+
+
+def find_teams(league, text):
+    """team_id -> first (start, end) where the text names that team."""
+    aliases = team_aliases(league)
+    found = {}
+    for m in _alias_pattern(aliases).finditer(text or ""):
+        found.setdefault(aliases[m.group(1)], (m.start(1), m.end(1)))
+    return found
+
+
+def tag_article(conn, article_id):
+    """(Re)write an article's team tags: 'game' for the two teams of a preview/recap, 'mentioned' for any other
+    team named in its headline, dek or body."""
+    a = conn.execute("SELECT a.league, a.game_id, a.headline, a.dek, a.body, g.home_team_id, g.away_team_id "
+                     "FROM articles a LEFT JOIN games g ON g.league = a.league AND g.game_id = a.game_id "
+                     "WHERE a.id = %s", (article_id,)).fetchone()
+    if not a:
+        return
+    league, game_id, headline, dek, body, home, away = a
+    tags = {t: "game" for t in (home, away) if t}
+    for t in find_teams(league, "\n".join(x for x in (headline, dek, body) if x)):
+        tags.setdefault(t, "mentioned")
+    conn.execute("DELETE FROM article_teams WHERE article_id = %s", (article_id,))
+    for t, role in tags.items():
+        conn.execute("INSERT INTO article_teams (article_id, league, team_id, role) VALUES (%s, %s, %s, %s)",
+                     (article_id, league, t, role))
+
+
+def article_team_tags(article_ids):
+    """article id -> [{team_id, role, name, short, abbr, logo}] (game teams first)."""
+    if not article_ids:
+        return {}
+    rows = query("SELECT at.article_id, at.team_id, at.role, t.display_name, t.short_name, t.abbreviation, t.logo "
+                 "FROM article_teams at JOIN teams t ON t.league = at.league AND t.team_id = at.team_id "
+                 "WHERE at.article_id = ANY(%s) ORDER BY at.article_id, at.role, t.display_name", (list(article_ids),))
+    out = defaultdict(list)
+    for r in rows:
+        out[r["article_id"]].append({"team_id": r["team_id"], "role": r["role"], "name": r["display_name"],
+                                     "short": r["short_name"], "abbr": r["abbreviation"], "logo": r["logo"]})
+    return out
+
+
+def team_news(league, team_id, n=10):
+    """A team's news: our published stories tagged with it, then ESPN headlines (link out), newest first."""
+    ours = _label(query(f"SELECT {', '.join('a.' + c.strip() for c in ARTICLE_COLS.split(','))}, at.role FROM articles a "
+                        "JOIN article_teams at ON at.article_id = a.id WHERE a.status = 'published' AND at.league = %s "
+                        "AND at.team_id = %s ORDER BY a.published_at DESC LIMIT %s", (league, team_id, n)))
+    espn = query("SELECT article_id, headline, description, url, published FROM news_items WHERE league = %s "
+                 "AND %s = ANY(team_ids) AND published > now() - interval '30 days' ORDER BY published DESC LIMIT %s",
+                 (league, team_id, n))
+    return ours, espn
+
+
+def news_feed(league, team_ids=None, since=None, limit=50):
+    """The app's news feed: our published stories and ESPN headlines, newest first, each with its teams.
+    team_ids: only items tagged with any of these teams. since: only items published after this time (for syncing)."""
+    params = {"league": league, "teams": team_ids or [], "since": since, "limit": limit}
+    ours = query("""
+        SELECT a.id, a.kind, a.slug, a.headline, a.dek, a.published_at FROM articles a
+        WHERE a.league = %(league)s AND a.status = 'published'
+          AND (cardinality(%(teams)s::text[]) = 0 OR EXISTS (
+                SELECT 1 FROM article_teams at WHERE at.article_id = a.id AND at.team_id = ANY(%(teams)s::text[])))
+          AND (%(since)s::timestamptz IS NULL OR a.published_at > %(since)s::timestamptz)
+        ORDER BY a.published_at DESC LIMIT %(limit)s""", params)
+    espn = query("""
+        SELECT article_id, headline, description, url, published, team_ids FROM news_items
+        WHERE league = %(league)s AND published IS NOT NULL AND cardinality(team_ids) > 0
+          AND (cardinality(%(teams)s::text[]) = 0 OR team_ids && %(teams)s::text[])
+          AND (%(since)s::timestamptz IS NULL OR published > %(since)s::timestamptz)
+          AND published > now() - interval '30 days'
+        ORDER BY published DESC LIMIT %(limit)s""", params)
+    tags = article_team_tags([a["id"] for a in ours])
+    tmap = teams(league)
+    items = [{"source": "sidelinewire", "kind": a["kind"], "id": f"sw-{a['id']}", "article_id": a["id"],
+              "slug": a["slug"], "headline": a["headline"], "summary": a["dek"], "published_at": a["published_at"],
+              "teams": tags.get(a["id"], [])} for a in ours]
+    for n in espn:
+        tagged = [{"team_id": t, "role": "tagged", "name": (tmap.get(t) or {}).get("display_name"),
+                   "short": (tmap.get(t) or {}).get("short_name"), "abbr": (tmap.get(t) or {}).get("abbreviation"),
+                   "logo": (tmap.get(t) or {}).get("logo")} for t in n["team_ids"] if t in tmap]
+        items.append({"source": "espn", "kind": "news", "id": f"espn-{n['article_id']}", "url": n["url"],
+                      "headline": n["headline"], "summary": n["description"], "published_at": n["published"],
+                      "teams": tagged})
+    items.sort(key=lambda i: i["published_at"], reverse=True)
+    return items[:limit]
