@@ -39,8 +39,8 @@ spec:
                 - secretRef:
                     name: pipeline-env
               env:
-                - {name: OPENBLAS_NUM_THREADS, value: \"4\"}
-                - {name: OMP_NUM_THREADS, value: \"4\"}
+                - {name: OPENBLAS_NUM_THREADS, value: "4"}
+                - {name: OMP_NUM_THREADS, value: "4"}
               resources:
                 requests: {cpu: 500m, memory: 1Gi}
                 limits: {memory: 4Gi}
@@ -87,8 +87,8 @@ spec:
                 - secretRef:
                     name: pipeline-env
               env:
-                - {name: OPENBLAS_NUM_THREADS, value: \"4\"}
-                - {name: OMP_NUM_THREADS, value: \"4\"}
+                - {name: OPENBLAS_NUM_THREADS, value: "4"}
+                - {name: OMP_NUM_THREADS, value: "4"}
               resources:
                 requests: {cpu: 500m, memory: 1Gi}
                 limits: {memory: 4Gi}
@@ -135,8 +135,8 @@ spec:
                 - secretRef:
                     name: pipeline-env
               env:
-                - {name: OPENBLAS_NUM_THREADS, value: \"4\"}
-                - {name: OMP_NUM_THREADS, value: \"4\"}
+                - {name: OPENBLAS_NUM_THREADS, value: "4"}
+                - {name: OMP_NUM_THREADS, value: "4"}
               resources:
                 requests: {cpu: "2", memory: 4Gi}
                 limits: {memory: 16Gi}   # CFB EPA holds ~3M plays in memory
@@ -183,8 +183,8 @@ spec:
                 - secretRef:
                     name: pipeline-env
               env:
-                - {name: OPENBLAS_NUM_THREADS, value: \"4\"}
-                - {name: OMP_NUM_THREADS, value: \"4\"}
+                - {name: OPENBLAS_NUM_THREADS, value: "4"}
+                - {name: OMP_NUM_THREADS, value: "4"}
               resources:
                 requests: {cpu: "2", memory: 4Gi}
                 limits: {memory: 16Gi}
