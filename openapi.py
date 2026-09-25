@@ -221,7 +221,8 @@ SPEC = {
             param("group", description="Conference (CFB) or conference/division (NFL)")],
             {"season": NI, "type": S, "group": NS}),
         "/{league}/news": get("Team news feed: our stories and ESPN headlines with team tags", arr(ref("NewsItem")), [
-            LEAGUE, param("team_id", description="Comma-separated team ids (e.g. a user's followed teams)"),
+            LEAGUE, param("team_id", description="Comma-separated team ids (e.g. a user's followed teams). Our previews and recaps "
+                                                      "match only their two game teams; ratings and columns match every team they tag"),
             param("since", schema={"type": "string", "format": "date-time"},
                   description="Only items published after this time; pass meta.newest from your last sync"),
             param("limit", schema=I, description="1-200, default 50")], {"newest": nullable({"type": "string", "format": "date-time"})},
@@ -229,7 +230,8 @@ SPEC = {
         "/{league}/teams/{team_id}/news": get("One team's news (stories and ESPN headlines)", arr(ref("NewsItem")),
                                               [LEAGUE, TEAM_ID, param("limit", schema=I, description="1-100, default 30")]),
         "/{league}/articles": get("Published stories, newest first", arr(ref("Article")), [
-            LEAGUE, param("team_id", description="Only stories tagged with any of these comma-separated team ids"),
+            LEAGUE, param("team_id", description="Only stories about any of these comma-separated team ids: a preview or recap "
+                                                      "matches its two game teams only; ratings and columns match every team they tag"),
             param("kind", schema={"type": "string", "enum": ["preview", "recap", "ratings", "editorial"]}),
             param("limit", schema=I, description="1-50, default 20"), param("offset", schema=I)],
             description="Written by our AI newsroom from game data and fact-checked before publishing."),

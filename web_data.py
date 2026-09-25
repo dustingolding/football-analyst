@@ -8,7 +8,7 @@ EPA sources). Season aggregates are cached in memory for a few minutes.
 import time
 from collections import defaultdict
 
-from database import connect
+from database import TEAM_STORY_SQL, connect
 
 CACHE_SECONDS = 300
 _cache = {}
@@ -925,10 +925,11 @@ def article_team_tags(article_ids):
 
 
 def team_news(league, team_id, n=10):
-    """A team's news: our published stories tagged with it, then ESPN headlines (link out), newest first."""
+    """A team's news: our published stories about it (TEAM_STORY_SQL), then ESPN headlines (link out), newest first."""
     ours = _label(query(f"SELECT {', '.join('a.' + c.strip() for c in ARTICLE_COLS.split(','))}, at.role FROM articles a "
                         "JOIN article_teams at ON at.article_id = a.id WHERE a.status = 'published' AND at.league = %s "
-                        "AND at.team_id = %s ORDER BY a.published_at DESC LIMIT %s", (league, team_id, n)))
+                        f"AND at.team_id = %s AND {TEAM_STORY_SQL} ORDER BY a.published_at DESC LIMIT %s",
+                        (league, team_id, n)))
     espn = query("SELECT article_id, headline, description, url, published FROM news_items WHERE league = %s "
                  "AND %s = ANY(team_ids) AND published > now() - interval '30 days' ORDER BY published DESC LIMIT %s",
                  (league, team_id, n))
@@ -937,13 +938,15 @@ def team_news(league, team_id, n=10):
 
 def news_feed(league, team_ids=None, since=None, limit=50):
     """The app's news feed: our published stories and ESPN headlines, newest first, each with its teams.
-    team_ids: only items tagged with any of these teams. since: only items published after this time (for syncing)."""
+    team_ids: only items about any of these teams (our stories by TEAM_STORY_SQL; ESPN by its tags). since: only items
+    published after this time (for syncing)."""
     params = {"league": league, "teams": team_ids or [], "since": since, "limit": limit}
-    ours = query("""
+    ours = query(f"""
         SELECT a.id, a.kind, a.slug, a.headline, a.dek, a.published_at FROM articles a
         WHERE a.league = %(league)s AND a.status = 'published'
           AND (cardinality(%(teams)s::text[]) = 0 OR EXISTS (
-                SELECT 1 FROM article_teams at WHERE at.article_id = a.id AND at.team_id = ANY(%(teams)s::text[])))
+                SELECT 1 FROM article_teams at WHERE at.article_id = a.id AND at.team_id = ANY(%(teams)s::text[])
+                  AND {TEAM_STORY_SQL}))
           AND (%(since)s::timestamptz IS NULL OR a.published_at > %(since)s::timestamptz)
         ORDER BY a.published_at DESC LIMIT %(limit)s""", params)
     espn = query("""
