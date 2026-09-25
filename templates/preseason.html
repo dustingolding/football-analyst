@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% from "_contrib.html" import contrib %}
+{% block title %}{{ season }} preseason ratings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ season }} preseason ratings</h1>
+    <p class="muted">Last season plus the offseason: returning production, transfer portal, recruiting and coaching changes.</p>
+  </div>
+  <form class="picker" method="get">
+    <select name="season" onchange="this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="sort" onchange="this.form.submit()" aria-label="Sort by">
+      {% for key, label in sorts.items() %}<option value="{{ key }}" {{ 'selected' if key == sort }}>{{ label }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="table-scroll"><table class="preseason-table">
+  <thead>
+    <tr>
+      <th>#</th><th>Team</th>
+      <th title="Projected points vs an average FBS team on a neutral field">Rating</th>
+      <th title="Last season's rating">Last yr</th>
+      <th>Change</th>
+      {% for g in groups %}<th title="Points from {{ g }}">{{ g|capitalize }}</th>{% endfor %}
+      <th title="Transfers in / out">Portal</th>
+      <th title="This season so far">Actual</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="muted">{{ r.rank }}</td>
+      <td class="nowrap">{{ team_link(league, r.team_id, r.team, short=True) }}</td>
+      <td><strong>{{ '%+.1f'|format(r.rating) }}</strong></td>
+      <td class="muted">{{ '%+.1f'|format(r.baseline) if r.baseline is not none else '–' }}</td>
+      <td>{{ contrib(r.change) if r.change is not none else '–' }}</td>
+      {% for g in groups %}<td>{{ contrib(r.contributions.get(g, 0)) }}</td>{% endfor %}
+      <td class="nowrap muted">{{ r.n_in }} / {{ r.n_out }}</td>
+      <td>{{ '%+.1f'|format(r.actual) if r.actual is not none else '–' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+<p class="muted small">
+  Ratings are points better or worse than an average FBS team on a neutral field. Each season's model is fit only on
+  earlier seasons. Group columns show how many points each part adds or takes away versus an average team:
+  history (last two seasons, efficiency), recruiting (four-class average, talent), returning production,
+  transfers (incoming production weighted by the old team's level, 247 ratings in and out), and coaching (new head coach).
+  Tested on 2021–2025, preseason ratings correlate 0.71 with how teams actually played, versus 0.65 for last season alone.
+</p>
+{% endblock %}

@@ -561,3 +561,67 @@ def power_ratings(league, season):
             t["rank"] = i
         return out
     return cached(("power", league, season), build)
+
+
+def preseason_table(league, season):
+    """Preseason ratings with contribution breakdowns, ranked (FBS)."""
+    def build():
+        rows = query("SELECT team_id, rating, baseline, actual, contributions, features FROM team_preseason "
+                     "WHERE league = %s AND season = %s", (league, season))
+        team_map = teams(league)
+        recs = records(league, season)
+        for r in rows:
+            r["team"] = team_map.get(r["team_id"])
+            r["record"] = (recs.get(r["team_id"]) or {}).get("overall")
+            r["change"] = r["rating"] - r["baseline"] if r["baseline"] is not None else None
+            r["n_in"] = int(r["features"].get("n_transfers_in") or 0)
+            r["n_out"] = int(r["features"].get("n_transfers_out") or 0)
+        rows.sort(key=lambda r: -r["rating"])
+        for i, r in enumerate(rows, 1):
+            r["rank"] = i
+        return rows
+    return cached(("preseason", league, season), build)
+
+
+def preseason_seasons(league):
+    return [r["season"] for r in query("SELECT DISTINCT season FROM team_preseason WHERE league = %s ORDER BY 1 DESC",
+                                       (league,))]
+
+
+def team_transfers(league, season, team_id):
+    """Incoming and outgoing transfers for a team's season, with what incoming players produced."""
+    rows = query(
+        """
+        SELECT t.name, t.position, t.stars, t.rating, t.origin_team_id, t.origin_name, t.dest_team_id, t.dest_name,
+               t.player_id
+        FROM transfers t WHERE t.league = %s AND t.season = %s AND (t.dest_team_id = %s OR t.origin_team_id = %s)
+        """,
+        (league, season, team_id, team_id),
+    )
+    prev = {p["player_id"]: p for p in player_seasons(league, season - 1).values()} if rows else {}
+    team_map = teams(league)
+    incoming, outgoing = [], []
+    for r in rows:
+        stats = (prev.get(r["player_id"]) or {}).get("stats") or {}
+        r["last_season"] = ", ".join(x for x in (
+            f"{stats['pass_yds']:,.0f} pass yds" if stats.get("pass_yds", 0) >= 300 else "",
+            f"{stats['rush_yds']:,.0f} rush yds" if stats.get("rush_yds", 0) >= 150 else "",
+            f"{stats['rec_yds']:,.0f} rec yds" if stats.get("rec_yds", 0) >= 150 else "",
+            f"{stats['tackles']:.0f} tkl" if stats.get("tackles", 0) >= 20 else "",
+            f"{stats.get('sacks', 0):.1f} sacks" if stats.get("sacks", 0) >= 2 else "",
+        ) if x)
+        if r["dest_team_id"] == team_id:
+            r["other"] = team_map.get(r["origin_team_id"]) or {"display_name": r["origin_name"]}
+            r["other_id"] = r["origin_team_id"]
+            incoming.append(r)
+        else:
+            r["other"] = team_map.get(r["dest_team_id"]) or ({"display_name": r["dest_name"]} if r["dest_name"] else None)
+            r["other_id"] = r["dest_team_id"]
+            outgoing.append(r)
+    key = lambda r: (-(r["rating"] or 0), r["name"])  # noqa: E731
+    return sorted(incoming, key=key), sorted(outgoing, key=key)
+
+
+def team_preseason(league, season, team_id):
+    row = next((r for r in preseason_table(league, season) if r["team_id"] == team_id), None)
+    return row

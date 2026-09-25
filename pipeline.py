@@ -39,6 +39,8 @@ def steps(stage):
         ("CFB play-by-play", ["espn_pbp.py", *this_season]),
         ("CFB EPA", ["cfb_epa.py"]),
         ("CFB box scores/rosters/polls", ["cfbd_box.py", *this_season]),
+        ("CFB transfers/recruits/coaches", ["cfbd_players.py", "--start", str(int(season) - 1)]),
+        ("CFB preseason ratings", ["offseason.py"]),
     ]
     model = [
         ("Elo", ["elo.py"]),

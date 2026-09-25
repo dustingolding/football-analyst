@@ -69,7 +69,7 @@
     <div class="subnav">
       <div class="wrap">
         {% set items = [('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
-             + ([('rankings_page', 'Rankings')] if league == 'cfb' else [])
+             + ([('rankings_page', 'Rankings'), ('preseason_page', 'Preseason')] if league == 'cfb' else [])
              + [('stats_page', 'Stats'), ('ratings', 'Ratings')] %}
         {% for endpoint, label in items %}
           <a href="{{ url_for(endpoint, league=league) }}"

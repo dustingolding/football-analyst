@@ -483,7 +483,7 @@ def team_page(league, team_id):
         abort(404)
     season = web_data.resolve_season(league, request.args.get("season", type=int))
     tab = request.args.get("tab", "home")
-    if tab not in ("home", "schedule", "stats", "roster"):
+    if tab not in ("home", "schedule", "stats", "roster", "offseason") or (tab == "offseason" and league != "cfb"):
         tab = "home"
 
     aff = web_data.affiliations(league, season).get(team_id) or {}
@@ -528,6 +528,8 @@ def team_page(league, team_id):
         leaders=web_data.team_leaders(stat_tables) if stat_tables else [],
         roster=web_data.roster_groups(league, season, team_id) if tab == "roster" else {},
         stat_labels=web_data.STAT_LABELS, decimals=web_data.DECIMALS,
+        preseason=web_data.team_preseason(league, season, team_id) if league == "cfb" else None,
+        transfers=web_data.team_transfers(league, season, team_id) if tab == "offseason" else ([], []),
     )
 
 
@@ -560,6 +562,32 @@ def rankings_page(league):
     tables = web_data.poll_tables(league, season, selected["season_type"], selected["week"]) if selected else []
     return render_template("rankings.html", league=league, league_name=LEAGUES[league], season=season,
                            seasons=web_data.seasons(league), weeks=weeks, selected=selected, tables=tables)
+
+
+PRESEASON_SORTS = {"rating": "Preseason rating", "change": "Change from last season", "transfers": "Transfers",
+                   "returning": "Returning production", "recruiting": "Recruiting"}
+
+
+@app.route("/<league>/preseason")
+def preseason_page(league):
+    league_or_404(league)
+    seasons = web_data.preseason_seasons(league)
+    if not seasons:
+        abort(404)
+    season = request.args.get("season", seasons[0], type=int)
+    if season not in seasons:
+        season = seasons[0]
+    sort = request.args.get("sort", "rating")
+    if sort not in PRESEASON_SORTS:
+        sort = "rating"
+    rows = list(web_data.preseason_table(league, season))
+    if sort == "change":
+        rows.sort(key=lambda r: -(r["change"] or 0))
+    elif sort != "rating":
+        rows.sort(key=lambda r: -r["contributions"].get(sort, 0))
+    groups = ["history", "recruiting", "returning", "transfers", "coaching"]
+    return render_template("preseason.html", league=league, league_name=LEAGUES[league], season=season,
+                           seasons=seasons, rows=rows, sort=sort, sorts=PRESEASON_SORTS, groups=groups)
 
 
 def stats_filters(league):

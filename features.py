@@ -326,7 +326,21 @@ def preseason_context(conn, league, games):
         "prev_sp_defense": prev["sp_defense"].to_numpy(), "recruiting_avg": recruiting_avg,
         "talent": current["talent"].to_numpy(), "returning_ppa_pct": current["returning_ppa_pct"].to_numpy(),
         "returning_passing_ppa_pct": current["returning_passing_ppa_pct"].to_numpy(),
+        "preseason_rating": preseason_ratings(conn, league, teams),
     })
+
+
+PRESEASON_MISSING = -25.0  # teams without a preseason rating (FCS, first FBS season) are rated well below FBS
+
+
+def preseason_ratings(conn, league, teams):
+    """Each team's preseason rating (offseason.py) for the game's season; seasons with no
+    ratings at all stay NaN, teams missing in a rated season get PRESEASON_MISSING."""
+    rows = conn.execute("SELECT season, team_id, rating FROM team_preseason WHERE league = %s", (league,)).fetchall()
+    ratings = {(s, t): r for s, t, r in rows}
+    rated_seasons = {s for s, _, _ in rows}
+    return np.array([ratings.get((s, t), PRESEASON_MISSING) if s in rated_seasons else np.nan
+                     for s, t in zip(teams["season"], teams["team"])], dtype=float)
 
 
 def previous_starters(games, qb_games):

@@ -297,3 +297,12 @@ table.compact td, table.compact th, table.stats-table td { white-space: nowrap; 
 .tk-situation.red-zone { color: var(--miss); font-weight: 700; }
 @media (prefers-color-scheme: dark) { .tk-row img { filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.55)); } }
 .tk-situation:empty { display: none; }
+
+/* Preseason contributions */
+.contrib { font-weight: 700; font-variant-numeric: tabular-nums; }
+.contrib.pos { color: var(--hit); }
+.contrib.neg { color: var(--miss); }
+.contrib.flat { color: var(--muted); }
+.preseason-table td, .preseason-table th { white-space: nowrap; }
+.contrib-list div { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.contrib-list div:last-child { border-bottom: 0; }

@@ -1,0 +1,4 @@
+{# Contribution chips: points vs an average FBS team, by group. #}
+{% macro contrib(value) -%}
+  <span class="contrib {{ 'pos' if value > 0.25 else ('neg' if value < -0.25 else 'flat') }}">{{ '%+.1f'|format(value) }}</span>
+{%- endmacro %}
