@@ -9,3 +9,5 @@ scikit-learn
 joblib
 xgboost
 psycopg[binary]
+httpx[http2]
+PyJWT[crypto]

@@ -1,0 +1,213 @@
+"""Push alerts for followed teams, driven by the live scores live.py writes.
+
+Runs continuously (a Kubernetes Deployment). Every 20 s it compares each game in live_games with the
+last state it saw (push_game_state) and alerts the devices following either team (push_follows):
+    kickoff   pre -> in
+    score     a score went up (extra points and two-point tries are folded into the next alert)
+    final     -> post
+Each alert is inserted into push_events before it's sent, so a restart or retry never repeats one.
+A game seen for the first time is recorded without alerts, so starting up mid-game or after
+downtime doesn't replay the day, and changes older than STALE are recorded but not sent.
+
+Needs APNS_KEY_P8, APNS_KEY_ID and APNS_TEAM_ID (the apns Secret). Without them it records events
+and logs what it would have sent.
+
+    python notify.py                      # run forever
+    python notify.py --once               # one pass
+    python notify.py --dry-run            # print the alerts a pass would send; writes nothing
+    python notify.py --test <install_id>  # send a test alert to one registered device
+"""
+
+import argparse
+import time
+from datetime import datetime, timedelta, timezone
+
+import psycopg
+
+from database import connect, init_db
+from push import Apns
+
+EVERY = 20
+STALE = timedelta(minutes=15)
+PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final"}
+EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "test": 3600}
+
+GAMES = """
+    SELECT l.league, l.game_id, l.state, l.detail, l.home_score, l.away_score, l.last_play, l.broadcast,
+           l.updated_at, g.home_team_id, g.away_team_id,
+           s.state AS seen_state, s.home_score AS seen_home, s.away_score AS seen_away
+    FROM live_games l
+    JOIN games g USING (league, game_id)
+    LEFT JOIN push_game_state s USING (league, game_id)
+    WHERE l.updated_at > now() - interval '2 days'
+"""
+
+
+def team_names(conn):
+    rows = conn.execute("SELECT league, team_id, abbreviation, short_name, display_name FROM teams").fetchall()
+    return {(league, team_id): {"abbr": abbr or short or team_id, "short": short or display or abbr or team_id}
+            for league, team_id, abbr, short, display in rows}
+
+
+def scoring_label(points):
+    return {3: "field goal", 2: "safety", 6: "touchdown", 7: "touchdown", 8: "touchdown"}.get(points, "score")
+
+
+def detect(game, names):
+    """Alerts for one game's change since the last pass, as (kind, detail, title, body)."""
+    league = game["league"]
+    home = names.get((league, game["home_team_id"]), {"abbr": game["home_team_id"], "short": game["home_team_id"]})
+    away = names.get((league, game["away_team_id"]), {"abbr": game["away_team_id"], "short": game["away_team_id"]})
+    h, a = game["home_score"], game["away_score"]
+    line = f"{away['abbr']} {a} – {home['abbr']} {h}"
+    events = []
+
+    if game["seen_state"] == "pre" and game["state"] == "in":
+        body = f"On {game['broadcast']}." if game["broadcast"] else "Underway now."
+        events.append(("kickoff", "kickoff", f"Kickoff: {away['short']} at {home['short']}", body))
+
+    if game["state"] == "post" and game["seen_state"] != "post":
+        if h is not None and a is not None:
+            overtime = " (OT)" if "OT" in (game["detail"] or "") else ""
+            if h == a:
+                body = f"{away['short']} and {home['short']} tie{overtime}."
+            else:
+                winner, loser = (home, away) if h > a else (away, home)
+                body = f"{winner['short']} beat {loser['short']}{overtime}."
+            events.append(("final", "final", f"Final: {line}", body))
+    elif game["state"] in ("in", "post") and None not in (h, a, game["seen_home"], game["seen_away"]):
+        up_home, up_away = h - game["seen_home"], a - game["seen_away"]
+        scorer, points = (home, up_home) if up_home >= up_away else (away, up_away)
+        play = game["last_play"] or ""
+        # One or two points on their own are the try after a touchdown already announced; a safety
+        # (also two) is only called when the play says so.
+        if points > 2 or (points == 2 and "safety" in play.lower()):
+            label = scoring_label(points)
+            body = line + (f" · {game['detail']}" if game["detail"] else "")
+            # The latest play can lag the score by a poll; only quote it when it's clearly this score.
+            if (label == "touchdown" and "touchdown" in play.lower()) or (label == "field goal" and "field goal" in play.lower()):
+                body += f"\n{play}"
+            events.append(("score", f"{a}-{h}", f"{scorer['short']} {label}", body))
+    return events
+
+
+def record_state(conn, game):
+    conn.execute(
+        "INSERT INTO push_game_state (league, game_id, state, home_score, away_score) VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (league, game_id) DO UPDATE SET state = EXCLUDED.state, home_score = EXCLUDED.home_score, "
+        "away_score = EXCLUDED.away_score, updated_at = now()",
+        (game["league"], game["game_id"], game["state"], game["home_score"], game["away_score"]))
+
+
+def recipients(conn, league, team_ids, kind):
+    column = PREFERENCE[kind]  # fixed names, never user input
+    return conn.execute(
+        f"""
+        SELECT DISTINCT d.install_id, d.apns_token, d.environment, d.bundle_id
+        FROM push_devices d JOIN push_follows f USING (install_id)
+        WHERE f.league = %s AND f.team_id = ANY(%s) AND d.disabled_at IS NULL AND d.{column}
+        """,
+        (league, list(team_ids))).fetchall()
+
+
+def deliver(conn, apns, devices, league, game_id, kind, title, body):
+    """Send one alert to each device; returns (sent, failed). Dead tokens are switched off."""
+    sent = failed = 0
+    for install_id, token, environment, bundle_id in devices:
+        if apns is None:
+            print(f"[notify] (no APNs key) would send {kind} to {install_id}: {title} | {body}", flush=True)
+            continue
+        result = apns.send(token, environment, bundle_id, {"title": title, "body": body},
+                           data={"league": league, "game_id": game_id, "kind": kind},
+                           collapse_id=f"{league}-{game_id}-score" if kind == "score" else None,
+                           thread_id=f"{league}-{game_id}", expires_in=EXPIRES[kind])
+        if result.ok:
+            sent += 1
+            continue
+        failed += 1
+        print(f"[notify] {kind} to {install_id} failed: {result.status} {result.reason}", flush=True)
+        if result.dead_token:
+            conn.execute("UPDATE push_devices SET disabled_at = now(), last_error = %s WHERE install_id = %s",
+                         (result.reason or str(result.status), install_id))
+    return sent, failed
+
+
+def run_pass(conn, apns, dry_run=False):
+    names = team_names(conn)
+    now = datetime.now(timezone.utc)
+    cur = conn.execute(GAMES)
+    columns = [d.name for d in cur.description]
+    alerts = 0
+    for row in cur.fetchall():
+        game = dict(zip(columns, row))
+        first_sight = game["seen_state"] is None
+        events = [] if first_sight else detect(game, names)
+        stale = now - game["updated_at"] > STALE
+        if dry_run:
+            for kind, detail, title, body in events:
+                devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind)
+                print(f"[notify] dry run: {kind} {game['league']} {game['game_id']} -> {len(devices)} device(s): "
+                      f"{title} | {body}{' (stale, not sent)' if stale else ''}", flush=True)
+            continue
+        for kind, detail, title, body in events:
+            # Claim the alert first; if the row already exists, it was handled on an earlier pass.
+            claimed = conn.execute(
+                "INSERT INTO push_events (league, game_id, kind, detail, title, body) VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT DO NOTHING RETURNING 1",
+                (game["league"], game["game_id"], kind, detail, title, body)).fetchone()
+            if not claimed or stale:
+                continue
+            devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind)
+            sent, failed = deliver(conn, apns, devices, game["league"], game["game_id"], kind, title, body)
+            conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE league = %s AND game_id = %s "
+                         "AND kind = %s AND detail = %s", (sent, failed, game["league"], game["game_id"], kind, detail))
+            alerts += 1
+            print(f"[notify] {kind} {game['league']} {game['game_id']}: {title} -> {sent} sent, {failed} failed",
+                  flush=True)
+        record_state(conn, game)
+    return alerts
+
+
+def send_test(conn, apns, install_id):
+    device = conn.execute("SELECT install_id, apns_token, environment, bundle_id FROM push_devices "
+                          "WHERE install_id = %s", (install_id.lower(),)).fetchone()
+    if not device:
+        raise SystemExit(f"No registered device {install_id}.")
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    title, body = "SidelineWire test alert", "Push notifications are working."
+    conn.execute("INSERT INTO push_events (league, game_id, kind, detail, title, body) VALUES "
+                 "('-', '-', 'test', %s, %s, %s)", (f"{install_id} {stamp}", title, body))
+    sent, failed = deliver(conn, apns, [device], "-", "-", "test", title, body)
+    print(f"[notify] test to {install_id}: {sent} sent, {failed} failed", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Push alerts for followed teams.")
+    parser.add_argument("--once", action="store_true", help="one pass, then exit")
+    parser.add_argument("--dry-run", action="store_true", help="print what one pass would send; write nothing")
+    parser.add_argument("--test", metavar="INSTALL_ID", help="send a test alert to one registered device")
+    args = parser.parse_args()
+
+    apns = Apns.from_env()
+    if apns is None:
+        print("[notify] APNs key not configured; alerts will be logged, not sent", flush=True)
+    with connect() as conn:
+        init_db(conn)
+        if args.test:
+            return send_test(conn, apns, args.test)
+        if args.dry_run:
+            return run_pass(conn, apns, dry_run=True)
+        while True:
+            try:
+                run_pass(conn, apns)
+            except psycopg.OperationalError:
+                raise  # connection lost: exit so Kubernetes restarts the pod with a fresh one
+            except Exception as exc:  # anything else: keep the service up; the next pass retries
+                print(f"[notify] pass failed: {type(exc).__name__}: {exc}", flush=True)
+            if args.once:
+                return
+            time.sleep(EVERY)
+
+
+if __name__ == "__main__":
+    main()

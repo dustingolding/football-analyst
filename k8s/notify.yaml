@@ -1,0 +1,39 @@
+# Push alerts for followed teams (notify.py): watches live_games every 20 s and sends kickoff, score
+# and final alerts through APNs. Uses the pipeline image. The apns Secret (APNS_KEY_P8, APNS_KEY_ID,
+# APNS_TEAM_ID) is optional: without it the notifier records alerts and logs them instead of sending.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # one sender at a time
+  selector:
+    matchLabels:
+      app: notify
+  template:
+    metadata:
+      labels:
+        app: notify
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: notify
+          image: ${PIPELINE_IMAGE}
+          imagePullPolicy: Never
+          command: ["python", "-u", "notify.py"]
+          envFrom:
+            - secretRef:
+                name: pipeline-env
+            - secretRef:
+                name: apns
+                optional: true
+          env:
+            - {name: OPENBLAS_NUM_THREADS, value: "1"}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 192Mi}
