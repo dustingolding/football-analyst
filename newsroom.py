@@ -621,6 +621,10 @@ def anchored_number_problems(text, facts):
             if kind == "ent":
                 continue
             n = norm_num(val)
+            clock = re.match(r"\d{1,2}:\d\d", sentence[marks[i][0]:]) or (
+                marks[i][0] > 0 and sentence[marks[i][0] - 1] == ":")
+            if clock:  # times like 37:05 (possession, game clock) are checked whole, below
+                continue
             before = next((ents[v] for _, k, v in reversed(marks[:i]) if k == "ent"), None)
             after = next((ents[v] for _, k, v in marks[i + 1:] if k == "ent"), None)
             if n in {"1", "2", "3", "4"} or re.fullmatch(r"20\d\d", val) or before is None:
@@ -751,6 +755,10 @@ def check(kind, article, facts):
     else:
         problems += anchored_number_problems(text, facts)
     problems += pair_problems(text, facts)
+    sheet = facts_text(facts)
+    bad_clock = sorted({c for c in re.findall(r"\b\d{1,2}:\d\d\b", text) if c not in sheet})
+    if bad_clock:
+        problems.append("times not in the facts: " + ", ".join(bad_clock))
 
     ftext = (facts_text(facts) + " " + " ".join(n for names in (facts.get("_aliases") or {}).values() for n in names)).lower()
     unknown = set()
