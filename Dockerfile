@@ -7,7 +7,7 @@ WORKDIR /app
 COPY requirements-web.txt .
 RUN pip install --no-cache-dir -r requirements-web.txt
 
-COPY app.py web_data.py database.py ./
+COPY app.py web_data.py database.py api.py openapi.py ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 

@@ -476,23 +476,9 @@ def teams_page(league):
     return render_template("teams.html", league=league, league_name=LEAGUES[league], groups=groups, season=season)
 
 
-@app.route("/<league>/teams/<team_id>")
-def team_page(league, team_id):
-    league_or_404(league)
-    team = web_data.teams(league).get(team_id)
-    if team is None:
-        abort(404)
-    season = web_data.resolve_season(league, request.args.get("season", type=int))
-    tab = request.args.get("tab", "home")
-    if tab not in ("home", "schedule", "stats", "roster", "offseason"):
-        tab = "home"
-
-    aff = web_data.affiliations(league, season).get(team_id) or {}
-    record = web_data.records(league, season).get(team_id)
-    power = web_data.power_ratings(league, season).get(team_id)
-    season_stats = web_data.team_seasons(league, season).get(team_id)
-    ap_rank = web_data.latest_ap_ranks(league, season).get(team_id) if league == "cfb" else None
-
+def team_schedule(league, season, team_id):
+    """A team's season games with predictions, from the team's side: opponent, win probability,
+    spread, and for finished games the result, score and whether it covered."""
     games = query(GAME_SQL + " WHERE g.league = %s AND g.season = %s AND (g.home_team_id = %s OR g.away_team_id = %s) "
                   "ORDER BY g.start_time", (league, season, team_id, team_id))
     attach_predictions(league, games)
@@ -514,6 +500,27 @@ def team_page(league, team_id):
             g["score"] = f"{us}-{them}"
             if g["team_spread"] is not None and us - them + g["team_spread"] != 0:
                 g["covered"] = us - them + g["team_spread"] > 0
+    return games
+
+
+@app.route("/<league>/teams/<team_id>")
+def team_page(league, team_id):
+    league_or_404(league)
+    team = web_data.teams(league).get(team_id)
+    if team is None:
+        abort(404)
+    season = web_data.resolve_season(league, request.args.get("season", type=int))
+    tab = request.args.get("tab", "home")
+    if tab not in ("home", "schedule", "stats", "roster", "offseason"):
+        tab = "home"
+
+    aff = web_data.affiliations(league, season).get(team_id) or {}
+    record = web_data.records(league, season).get(team_id)
+    power = web_data.power_ratings(league, season).get(team_id)
+    season_stats = web_data.team_seasons(league, season).get(team_id)
+    ap_rank = web_data.latest_ap_ranks(league, season).get(team_id) if league == "cfb" else None
+
+    games = team_schedule(league, season, team_id)
 
     stat_tables = web_data.team_player_stats(league, season, team_id) if tab in ("home", "stats") else {}
     upcoming = next((g for g in games if not g["completed"]), None)
@@ -782,6 +789,19 @@ def ticker_time(value):
     return clock if local.date() == today else f"{local.strftime('%a')} {clock}"
 
 
+@app.errorhandler(404)
+def not_found(err):
+    """JSON errors for API paths (apps), the plain page for everything else."""
+    if request.path.startswith("/api/"):
+        return jsonify({"error": {"code": "not_found", "message": "Not found."}}), 404
+    return err
+
+
 @app.context_processor
 def inject_globals():
     return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV}
+
+
+# The JSON API for apps (/api/v1); registered last because api.py imports this module.
+from api import bp as api_v1  # noqa: E402
+app.register_blueprint(api_v1)

@@ -305,6 +305,16 @@ CREATE TABLE IF NOT EXISTS player_status (
     PRIMARY KEY (league, source, source_id, team_id, player_name)
 );
 
+-- Keys for the JSON API (/api/v1). Only a SHA-256 hash is stored; the key is shown once.
+CREATE TABLE IF NOT EXISTS api_keys (
+    key_hash        TEXT        PRIMARY KEY,
+    prefix          TEXT        NOT NULL,     -- first characters, to recognize a key in logs
+    name            TEXT        NOT NULL,     -- who/what it's for, e.g. "iOS app"
+    rate_per_minute INTEGER     NOT NULL DEFAULT 300,
+    active          BOOLEAN     NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Preseason team ratings from last season + offseason movement (offseason.py), fit only on
 -- earlier seasons, with the rating broken down into contribution groups.
 CREATE TABLE IF NOT EXISTS team_preseason (
