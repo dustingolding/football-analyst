@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SidelineWire{% endblock %} · SidelineWire{{ ' Dev' if site_env != 'prod' }}</title>
+  {% if site_env != 'prod' %}<meta name="robots" content="noindex, nofollow">{% endif %}
+  <meta name="description" content="Win probabilities, projections and ratings for the NFL and college football.">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='images/favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="128x128" href="{{ url_for('static', filename='images/favicon.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/favicon.png') }}">
+  <meta property="og:site_name" content="SidelineWire">
+  <meta property="og:title" content="{{ self.title() }} · SidelineWire">
+  <meta property="og:image" content="{{ url_for('static', filename='images/sideline-wire-logo.png', _external=True, _scheme='https') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='live.js') }}" defer></script>
+</head>
+<body>
+  {% set ticker_blocks = ticker() %}
+  {% if ticker_blocks %}
+  <div class="ticker" aria-label="Scoreboard">
+    <div class="ticker-track">
+      {% for block in ticker_blocks %}
+        <a class="tk-league" href="{{ url_for('slate', league=block.league) }}">{{ block.label }}</a>
+        {% for g in block.games %}
+          <a class="tk-game tk-{{ g.ui_state }}" href="{{ url_for('game', league=block.league, game_id=g.game_id) }}"
+             data-live-game="{{ g.game_id }}" data-league="{{ block.league }}" data-state="{{ g.ui_state }}"
+             data-kickoff="{{ g.kickoff_ts }}" data-home-id="{{ g.home_team_id }}" data-away-id="{{ g.away_team_id }}">
+            <div class="tk-status">
+              <span class="js-status">{% if g.ui_state == 'in' %}{{ g.detail }}{% elif g.ui_state == 'final' %}{{ g.detail or 'Final' }}{% else %}{{ g.start_time|ticker_time }}{% endif %}</span>
+              {% if g.broadcast %}<span class="tk-net">{{ g.broadcast }}</span>{% endif %}
+            </div>
+            {% for side in ('away', 'home') %}
+              {% set has_ball = g.ui_state == 'in' and g.possession_team_id == g[side ~ '_team_id'] %}
+              {% set other = 'home' if side == 'away' else 'away' %}
+              {% set lost = g.ui_state == 'final' and g[side ~ '_score'] is not none and g[other ~ '_score'] is not none and g[side ~ '_score'] < g[other ~ '_score'] %}
+              <div class="tk-row {{ 'has-ball' if has_ball }} {{ 'lost' if lost }}" data-team="{{ g[side ~ '_team_id'] }}">
+                {% if g[side ~ '_logo'] %}<img src="{{ g[side ~ '_logo'] }}" alt="" loading="lazy">{% endif %}
+                <span class="tk-abbr">{% if g[side ~ '_rank'] %}<em>{{ g[side ~ '_rank'] }}</em>{% endif %}{{ g[side ~ '_abbr'] }}</span>
+                <span class="tk-ball" aria-hidden="true"></span>
+                {% if g.ui_state == 'pre' %}
+                  <span class="tk-score tk-record js-{{ side }}">{{ g[side ~ '_record'] or '' }}</span>
+                {% else %}
+                  <span class="tk-score js-{{ side }}">{{ g[side ~ '_score'] }}</span>
+                {% endif %}
+              </div>
+            {% endfor %}
+            <div class="tk-situation js-situation {{ 'red-zone' if g.red_zone }}">{{ g.down_distance if g.ui_state == 'in' and g.down_distance else '' }}</div>
+          </a>
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="brand" href="{{ url_for('home') }}" aria-label="SidelineWire home">
+        <span class="brand-mark"><img src="{{ url_for('static', filename='images/logo-header.png') }}" alt="" width="88" height="32"></span>
+        <span class="brand-name">Sideline<span>Wire</span></span>{% if site_env != 'prod' %} <small>dev</small>{% endif %}
+      </a>
+      <nav>
+        {% for key, name in leagues.items() %}
+          <a href="{{ url_for('slate', league=key) }}" class="{{ 'active' if league == key }}">{{ key|upper }}</a>
+        {% endfor %}
+        <a href="{{ url_for('models') }}" class="{{ 'active' if request.endpoint == 'models' }}">Models</a>
+      </nav>
+    </div>
+    {% if league %}
+    <div class="subnav">
+      <div class="wrap">
+        {% set items = [('slate', 'Games'), ('teams_page', 'Teams'), ('standings_page', 'Standings')]
+             + ([('rankings_page', 'Rankings')] if league == 'cfb' else [])
+             + [('stats_page', 'Stats'), ('ratings', 'Ratings')] %}
+        {% for endpoint, label in items %}
+          <a href="{{ url_for(endpoint, league=league) }}"
+             class="{{ 'active' if request.endpoint == endpoint or (endpoint == 'stats_page' and request.endpoint == 'stats_leaders_page') or (endpoint == 'teams_page' and request.endpoint == 'team_page') or (endpoint == 'slate' and request.endpoint == 'game') }}">{{ label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="wrap footer">
+    Predictions are computed ahead of time from games completed before kickoff. For entertainment and research, not betting advice.
+  </footer>
+</body>
+</html>

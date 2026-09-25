@@ -1,0 +1,186 @@
+# Scheduled pipeline runs (pipeline.py). Times are US Eastern.
+#   refresh-gameday  every 15 min, Thu-Mon 11:00-23:59  (game windows)
+#   refresh-hourly   hourly, every day                  (lines/schedules the rest of the time)
+#   daily            ${DAILY_SCHEDULE} (cron)            (play-by-play/EPA, box scores, rosters, polls)
+#   weekly           ${WEEKLY_SCHEDULE} (cron)            (daily + retrain after Monday night)
+# Overlaps are handled in pipeline.py with a Postgres advisory lock (refresh skips, others wait).
+# data/ and models/ are the checkout's folders on this node (APP_DIR), shared with manual runs.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: refresh-gameday
+  namespace: ${NAMESPACE}
+spec:
+  schedule: "*/15 11-23 * * 4,5,6,0,1"
+  timeZone: America/New_York
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0          # the next scheduled run is the retry
+      activeDeadlineSeconds: 1200
+      template:
+        metadata:
+          labels:
+            app: pipeline
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: pipeline
+              image: ${PIPELINE_IMAGE}
+              imagePullPolicy: Never
+              args: ["refresh"]
+              envFrom:
+                - secretRef:
+                    name: pipeline-env
+              resources:
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {memory: 4Gi}
+              volumeMounts:
+                - {name: data, mountPath: /app/data}
+                - {name: models, mountPath: /app/models}
+          volumes:
+            - name: data
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
+            - name: models
+              hostPath: {path: ${APP_DIR}/models, type: Directory}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: refresh-hourly
+  namespace: ${NAMESPACE}
+spec:
+  schedule: "5 * * * *"
+  timeZone: America/New_York
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1200
+      template:
+        metadata:
+          labels:
+            app: pipeline
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: pipeline
+              image: ${PIPELINE_IMAGE}
+              imagePullPolicy: Never
+              args: ["refresh"]
+              envFrom:
+                - secretRef:
+                    name: pipeline-env
+              resources:
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {memory: 4Gi}
+              volumeMounts:
+                - {name: data, mountPath: /app/data}
+                - {name: models, mountPath: /app/models}
+          volumes:
+            - name: data
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
+            - name: models
+              hostPath: {path: ${APP_DIR}/models, type: Directory}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily
+  namespace: ${NAMESPACE}
+spec:
+  schedule: "${DAILY_SCHEDULE}"
+  timeZone: America/New_York
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            app: pipeline
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: pipeline
+              image: ${PIPELINE_IMAGE}
+              imagePullPolicy: Never
+              args: ["daily"]
+              envFrom:
+                - secretRef:
+                    name: pipeline-env
+              resources:
+                requests: {cpu: "2", memory: 4Gi}
+                limits: {memory: 16Gi}   # CFB EPA holds ~3M plays in memory
+              volumeMounts:
+                - {name: data, mountPath: /app/data}
+                - {name: models, mountPath: /app/models}
+          volumes:
+            - name: data
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
+            - name: models
+              hostPath: {path: ${APP_DIR}/models, type: Directory}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weekly
+  namespace: ${NAMESPACE}
+spec:
+  schedule: "${WEEKLY_SCHEDULE}"
+  timeZone: America/New_York
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 10800
+      template:
+        metadata:
+          labels:
+            app: pipeline
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: pipeline
+              image: ${PIPELINE_IMAGE}
+              imagePullPolicy: Never
+              args: ["weekly"]
+              envFrom:
+                - secretRef:
+                    name: pipeline-env
+              resources:
+                requests: {cpu: "2", memory: 4Gi}
+                limits: {memory: 16Gi}
+              volumeMounts:
+                - {name: data, mountPath: /app/data}
+                - {name: models, mountPath: /app/models}
+          volumes:
+            - name: data
+              hostPath: {path: ${APP_DIR}/data, type: Directory}
+            - name: models
+              hostPath: {path: ${APP_DIR}/models, type: Directory}

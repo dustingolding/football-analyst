@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}{{ league_name }} power ratings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }} power ratings</h1>
+    <p class="muted">{{ season }} · each team going into its next game{% if league == 'cfb' %} · FBS{% endif %}</p>
+  </div>
+</div>
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Team</th><th>Record</th><th>Elo</th>
+      <th title="Opponent-adjusted offensive EPA per play">Off EPA</th>
+      <th title="Opponent-adjusted EPA per play allowed (lower is better)">Def EPA</th>
+      <th title="Starting QB, EPA per dropback">QB</th>
+      <th title="Weighted recent scoring margin">Form</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in teams %}
+    <tr>
+      <td class="muted">{{ t.rank }}</td>
+      <td class="nowrap">{{ team_link(league, t.team_id, t.team) }}</td>
+      <td>{{ t.record }}</td>
+      <td><strong>{{ t.elo|num(0) }}</strong></td>
+      <td>{{ t.off|signed(3) }}</td>
+      <td>{{ t.def|signed(3) }}</td>
+      <td>{{ t.qb|signed(3) }}</td>
+      <td>{{ t.form|signed }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

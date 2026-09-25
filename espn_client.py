@@ -3,6 +3,7 @@ import time
 import requests
 
 SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports/football"
+CORE_BASE = "https://sports.core.api.espn.com/v2/sports/football/leagues"
 
 LEAGUES = {
     "cfb": {"path": "college-football", "scoreboard_params": {"groups": 80, "limit": 500}},
@@ -13,18 +14,21 @@ RETRYABLE_STATUSES = {429, 502, 503, 504}
 
 
 class EspnClient:
-    def __init__(self, league, max_attempts=5, timeout=(10, 60)):
+    def __init__(self, league, max_attempts=5, timeout=(10, 60), on_response=None):
         if league not in LEAGUES:
             raise ValueError(f"Unknown league {league!r}; expected one of {list(LEAGUES)}")
         self.league = league
         self.config = LEAGUES[league]
         self.base_url = f"{SITE_BASE}/{self.config['path']}"
+        self.core_url = f"{CORE_BASE}/{self.config['path']}"
         self.max_attempts = max_attempts
         self.timeout = timeout
         self.session = requests.Session()
+        # Called as on_response(league, endpoint, params, status, payload) after each successful fetch.
+        self.on_response = on_response
 
-    def get(self, endpoint, params=None):
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+    def get(self, endpoint, params=None, core=False):
+        url = f"{self.core_url if core else self.base_url}/{endpoint.lstrip('/')}"
 
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -37,7 +41,10 @@ class EspnClient:
             else:
                 if response.status_code not in RETRYABLE_STATUSES or attempt == self.max_attempts:
                     response.raise_for_status()
-                    return response.json()
+                    payload = response.json()
+                    if self.on_response:
+                        self.on_response(self.league, endpoint, params, response.status_code, payload)
+                    return payload
                 delay = self._retry_delay(response, attempt)
                 reason = f"HTTP {response.status_code}"
 
@@ -64,12 +71,18 @@ class EspnClient:
     def fetch_team(self, team_id):
         return self.get(f"teams/{team_id}")
 
-    def fetch_games(self, year, week, season_type=2, **overrides):
-        params = {
+    def games_params(self, year, week, season_type=2, **overrides):
+        return {
             "dates": year,
             "seasontype": season_type,
             "week": week,
             **self.config["scoreboard_params"],
             **overrides,
         }
-        return self.get("scoreboard", params=params)
+
+    def fetch_games(self, year, week, season_type=2, **overrides):
+        return self.get("scoreboard", params=self.games_params(year, week, season_type, **overrides))
+
+    def fetch_odds(self, game_id):
+        """Betting lines per sportsbook for one game (core API; historical coverage from ~2012)."""
+        return self.get(f"events/{game_id}/competitions/{game_id}/odds", params={"limit": 100}, core=True)

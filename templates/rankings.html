@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}College football rankings {{ season }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Rankings</h1>
+    <p class="muted">{{ season }}{% if selected %} · {{ selected.label }}{% endif %}</p>
+  </div>
+  <form class="picker" method="get">
+    <select name="season" onchange="this.form.week.value=''; this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="week" onchange="this.form.submit()" aria-label="Week">
+      {% for w in weeks %}<option value="{{ w.value }}" {{ 'selected' if selected and w.value == selected.value }}>{{ w.label }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="poll-grid">
+{% for table in tables %}
+  <section>
+    <h2>{{ table.title }}</h2>
+    <div class="table-scroll"><table class="compact">
+      <thead><tr><th>#</th><th>Team</th><th>Record</th>{% if table.title != 'CFP Rankings' %}<th>Pts</th>{% endif %}<th></th></tr></thead>
+      <tbody>
+      {% for r in table.rows %}
+        <tr>
+          <td><strong>{{ r.rank }}</strong></td>
+          <td class="nowrap">{{ team_link(league, r.team_id, r.team, short=True) }}{% if r.first_place_votes %} <small class="muted">({{ r.first_place_votes }})</small>{% endif %}</td>
+          <td>{{ r.record or '' }}</td>
+          {% if table.title != 'CFP Rankings' %}<td class="muted">{{ r.points or '' }}</td>{% endif %}
+          <td class="nowrap">
+            {% if r.new %}<span class="move up">NEW</span>
+            {% elif r.movement %}<span class="move {{ 'up' if r.movement > 0 else 'down' }}">{{ '▲' if r.movement > 0 else '▼' }}{{ r.movement|abs }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+{% else %}
+  <p class="muted">No polls for this season.</p>
+{% endfor %}
+</div>
+{% endblock %}

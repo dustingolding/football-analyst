@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ league_name }} {{ season }} Week {{ week }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }}</h1>
+    <p class="muted">{{ season }} {{ season_types.get(season_type, '') }} · Week {{ week }} · {{ games|length }} games</p>
+  </div>
+  <form class="picker" method="get">
+    <select name="season" onchange="this.form.submit()">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="week" onchange="this.form.type.value = this.selectedOptions[0].dataset.type; this.form.submit()">
+      {% for w in weeks %}
+        <option value="{{ w.week }}" data-type="{{ w.season_type }}" {{ 'selected' if w.week == week and w.season_type == season_type }}>
+          {{ 'Post ' if w.season_type == 3 }}{{ 'Pre ' if w.season_type == 1 }}Week {{ w.week }}
+        </option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="type" value="{{ season_type }}">
+  </form>
+</div>
+
+{% if summary.picks[1] %}
+<div class="summary">
+  <div><strong>{{ summary.picks[0] }}-{{ summary.picks[1] - summary.picks[0] }}</strong><span>winners picked</span></div>
+  <div><strong>{{ summary.ats[0] }}-{{ summary.ats[1] - summary.ats[0] }}</strong><span>{{ independent }} vs the spread</span></div>
+</div>
+{% endif %}
+
+<div class="table-scroll">
+<table class="games">
+  <thead>
+    <tr>
+      <th>Kickoff</th><th>Matchup</th><th>Vegas</th><th>Total</th>
+      <th title="Market-adjusted model: home team win probability">Home win</th>
+      <th>Projection</th>
+      <th title="{{ independent }} model (no betting lines) compared with the spread">Our lean</th>
+      <th>Score</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for g in games %}
+    <tr data-live-game="{{ g.game_id }}" data-league="{{ league }}" data-state="{{ g.state }}" data-kickoff="{{ g.kickoff_ts }}">
+      <td class="nowrap muted">{{ g.start_time|kickoff }}</td>
+      <td>
+        <a class="matchup" href="{{ url_for('game', league=league, game_id=g.game_id) }}">
+          <span class="team {{ 'won' if g.completed and g.winner_home is defined and not g.winner_home }}">
+            {% if g.away_logo %}<img src="{{ g.away_logo }}" alt="" loading="lazy">{% endif %}
+            {% if g.away_rank %}<em>{{ g.away_rank }}</em>{% endif %}{{ g.away_short or g.away_abbr }}
+          </span>
+          <span class="at">{{ 'vs' if g.neutral_site else '@' }}</span>
+          <span class="team {{ 'won' if g.completed and g.winner_home }}">
+            {% if g.home_logo %}<img src="{{ g.home_logo }}" alt="" loading="lazy">{% endif %}
+            {% if g.home_rank %}<em>{{ g.home_rank }}</em>{% endif %}{{ g.home_short or g.home_abbr }}
+          </span>
+        </a>
+        {% if g.notes %}<div class="note">{{ g.notes }}</div>{% endif %}
+      </td>
+      <td class="nowrap">{{ g.spread_text }}</td>
+      <td>{{ g.total|num }}</td>
+      <td>
+        {% if g.win_prob is not none %}
+          <div class="bar" title="{{ g.home_abbr }} {{ g.win_prob|pct }}"><span style="width: {{ (g.win_prob * 100)|round(0) }}%"></span></div>
+          <small>{{ g.home_abbr }} {{ g.win_prob|pct }}</small>
+        {% else %}–{% endif %}
+      </td>
+      <td class="nowrap">
+        {% if g.proj_home is defined %}{{ g.away_abbr }} {{ g.proj_away|round|int }} – {{ g.proj_home|round|int }} {{ g.home_abbr }}{% else %}–{% endif %}
+      </td>
+      <td class="nowrap">
+        {% if g.edge is not none %}
+          <span class="lean {{ 'strong' if g.edge|abs >= 3 }}">{{ g.lean }} <small>{{ g.edge|abs|num }}</small></span>
+          {% if g.lean_right is defined %}<span class="mark {{ 'hit' if g.lean_right else 'miss' }}">{{ '✓' if g.lean_right else '✗' }}</span>{% endif %}
+        {% else %}–{% endif %}
+      </td>
+      <td class="nowrap">
+        {% if g.state != 'pre' %}
+          <span class="js-score">{{ g.show_away }}–{{ g.show_home }}</span>
+          {% if g.pick_right is defined %}<span class="mark {{ 'hit' if g.pick_right else 'miss' }}">{{ '✓' if g.pick_right else '✗' }}</span>{% endif %}
+          {% if g.state == 'in' %}<div class="js-status live-status"><span class="live-dot">LIVE</span> {{ g.status_text or '' }}</div>{% endif %}
+        {% else %}
+          <span class="js-score"></span>
+          <div class="js-status muted">{{ (g.status or '')|replace('STATUS_', '')|replace('_', ' ')|title }}</div>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="muted">No games this week.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted small">Home win and projection come from the market-adjusted model. "Our lean" is the {{ independent }} model's margin against the spread, which doesn't see betting lines; the number is how many points it disagrees with Vegas.</p>
+{% endblock %}

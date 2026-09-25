@@ -1,0 +1,33 @@
+# Live scores and play-by-play poller (live.py): ESPN scoreboards every 30 s, play-by-play for
+# games in progress every 60 s, idling at 5 min when nothing is on. Uses the pipeline image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: live
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # never two pollers at once
+  selector:
+    matchLabels:
+      app: live
+  template:
+    metadata:
+      labels:
+        app: live
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: live
+          image: ${PIPELINE_IMAGE}
+          imagePullPolicy: Never
+          command: ["python", "-u", "live.py"]
+          envFrom:
+            - secretRef:
+                name: pipeline-env
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 256Mi}

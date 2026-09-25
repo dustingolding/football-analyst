@@ -1,0 +1,20 @@
+{% macro team_link(league, team_id, team, rank=None, short=False) -%}
+  <a class="team-link" href="{{ url_for('team_page', league=league, team_id=team_id) }}">
+    {%- if team and team.logo %}<img class="logo" src="{{ team.logo }}" alt="" loading="lazy">{% endif -%}
+    {%- if rank %}<em class="rank">{{ rank }}</em>{% endif -%}
+    {{ (team.short_name if short else team.display_name) if team else team_id }}
+  </a>
+{%- endmacro %}
+
+{% macro season_picker(seasons, season, extra={}) -%}
+  <form class="picker" method="get">
+    {% for k, v in extra.items() %}{% if v %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+    <select name="season" onchange="this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+  </form>
+{%- endmacro %}
+
+{% macro stat(value, digits=0) -%}
+  {%- if value is none -%}–{%- elif digits == 0 -%}{{ '{:,.0f}'.format(value) }}{%- else -%}{{ ('{:.' ~ digits ~ 'f}').format(value) }}{%- endif -%}
+{%- endmacro %}

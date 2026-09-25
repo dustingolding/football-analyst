@@ -1,0 +1,26 @@
+# NPM terminates public HTTPS for the site and forwards https -> 192.168.10.9:<port>, one Traefik
+# entrypoint per environment (see traefik-config.yaml): dev -> :8040, prod -> :8042.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: ${NAMESPACE}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: ${ENTRYPOINT}
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - ${SITE_HOST}
+  rules:
+    - host: ${SITE_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

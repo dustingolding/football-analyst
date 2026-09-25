@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% block title %}{{ league_name }} standings {{ season }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ league_name }} standings</h1>
+    <p class="muted">{{ season }}{% if league == 'nfl' %} regular season{% else %} · FBS{% endif %}</p>
+  </div>
+  <form class="picker" method="get">
+    <select name="season" onchange="this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="group" onchange="this.form.submit()" aria-label="{{ 'Division' if league == 'nfl' else 'Conference' }}">
+      <option value="all" {{ 'selected' if selected == 'all' }}>All {{ 'divisions' if league == 'nfl' else 'conferences' }}</option>
+      {% for n in names %}<option value="{{ n }}" {{ 'selected' if n == selected }}>{{ n }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="{{ 'standings-grid' if league == 'nfl' else '' }}">
+{% for group in groups %}
+  <section>
+    <h2>{{ group.name }}</h2>
+    <div class="table-scroll"><table class="compact">
+      <thead><tr>
+        <th>Team</th>
+        {% if league == 'nfl' %}<th>W-L</th><th>Pct</th><th>Div</th><th>Conf</th>{% else %}<th>Conf</th><th>Overall</th>{% endif %}
+        <th>PF</th><th>PA</th><th>Diff</th><th>Strk</th>
+      </tr></thead>
+      <tbody>
+      {% for t in group.teams %}
+        <tr>
+          <td class="nowrap">{{ team_link(league, t.team_id, t.team, ranks.get(t.team_id), short=(league == 'nfl')) }}</td>
+          {% if league == 'nfl' %}
+            <td><strong>{{ t.overall }}</strong></td><td>{{ '%.3f'|format(t.pct)|replace('0.', '.') }}</td><td>{{ t.div }}</td><td>{{ t.conf }}</td>
+          {% else %}
+            <td><strong>{{ t.conf }}</strong></td><td>{{ t.overall }}</td>
+          {% endif %}
+          <td>{{ t.pf }}</td><td>{{ t.pa }}</td><td>{{ '%+d'|format(t.pf - t.pa) }}</td><td class="muted">{{ t.streak }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+{% endfor %}
+</div>
+{% endblock %}
