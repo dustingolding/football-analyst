@@ -274,6 +274,37 @@ CREATE TABLE IF NOT EXISTS draft_picks (
     PRIMARY KEY (league, season, pick)
 );
 
+-- News items (headline + publisher summary + link only; no article text).
+CREATE TABLE IF NOT EXISTS news_items (
+    league          TEXT        NOT NULL,
+    article_id      TEXT        NOT NULL,
+    published       TIMESTAMPTZ,
+    headline        TEXT,
+    description     TEXT,
+    url             TEXT,
+    team_ids        TEXT[],
+    athletes        TEXT[],
+    extracted_at    TIMESTAMPTZ,              -- when the LLM read it (NULL: not yet / not injury news)
+    PRIMARY KEY (league, article_id)
+);
+
+-- Player availability reports: CFB from news (LLM-extracted), NFL from official injury reports.
+CREATE TABLE IF NOT EXISTS player_status (
+    league          TEXT        NOT NULL,
+    source          TEXT        NOT NULL,     -- 'news_llm' or 'nfl_injury_report'
+    source_id       TEXT        NOT NULL,     -- article id / game id
+    team_id         TEXT        NOT NULL,
+    player_name     TEXT        NOT NULL,
+    player_id       TEXT,
+    position        TEXT,
+    status          TEXT        NOT NULL,     -- out, doubtful, questionable, probable, returning, suspended, season-ending
+    games           INTEGER,                  -- games expected to miss, when stated
+    published       TIMESTAMPTZ,
+    headline        TEXT,
+    url             TEXT,
+    PRIMARY KEY (league, source, source_id, team_id, player_name)
+);
+
 -- Preseason team ratings from last season + offseason movement (offseason.py), fit only on
 -- earlier seasons, with the rating broken down into contribution groups.
 CREATE TABLE IF NOT EXISTS team_preseason (

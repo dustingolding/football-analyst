@@ -143,12 +143,18 @@ def load_season(conn, season, refresh, games):
     lineup = starters(depth, games_by_team)
     shares = production_to_date(conn, season)
     status = defaultdict(dict)  # (game_id, team_id) -> player -> report status
+    listed = {}                  # per-player rows for player_status (game pages)
     for r in injuries.itertuples(index=False):
         if pd.isna(r.week) or not isinstance(r.gsis_id, str) or not isinstance(r.report_status, str):
             continue
         game = games_by_team.get((int(r.season), int(r.week), r.team))
         if game:
             status[(game[0], game[1])][r.gsis_id] = r.report_status
+            if r.report_status in ("Out", "Doubtful", "Questionable"):
+                injury = r.report_primary_injury if isinstance(r.report_primary_injury, str) else None
+                listed[(game[0], game[1], r.full_name)] = (
+                    "nfl", "nfl_injury_report", game[0], game[1], r.full_name, r.gsis_id, r.position,
+                    r.report_status.lower(), None, game[2], injury, None)
 
     rows = []
     for (season_, week, team), (game_id, team_id, _) in games_by_team.items():
@@ -170,6 +176,12 @@ def load_season(conn, season, refresh, games):
                     (SOURCE, ids))
         cur.executemany("INSERT INTO team_game_stats (league, game_id, team_id, source, stats) "
                         "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", rows)
+        # Per-player report lines (the injury goes in the headline column) for game pages.
+        cur.execute("DELETE FROM player_status WHERE league = 'nfl' AND source = 'nfl_injury_report' "
+                    "AND source_id = ANY(%s)", (ids,))
+        cur.executemany("INSERT INTO player_status (league, source, source_id, team_id, player_name, player_id, position, "
+                        "status, games, published, headline, url) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT DO NOTHING", list(listed.values()))
     with_lineup = sum(1 for r in rows if r[4].obj["starters_listed"] > 0)
     print(f"[availability] {season}: {len(rows)} team-games, {with_lineup} with a depth chart, "
           f"{sum(len(v) for v in status.values())} report entries", flush=True)

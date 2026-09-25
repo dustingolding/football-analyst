@@ -446,7 +446,8 @@ def game(league, game_id):
     models = [(MODEL_LABELS.get(k, k), MODEL_NOTES.get(k, ""), v) for k, v in sorted(
         g["preds"].items(), key=lambda kv: list(MODEL_LABELS).index(kv[0]) if kv[0] in MODEL_LABELS else 99)]
     return render_template("game.html", league=league, league_name=LEAGUES[league], g=g, matchup=matchup,
-                           models=models, books=books, context=f, **live_panel_context(league, g))
+                           models=models, books=books, context=f, availability=web_data.game_availability(league, g),
+                           **live_panel_context(league, g))
 
 
 @app.route("/<league>/ratings")

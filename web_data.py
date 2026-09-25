@@ -679,3 +679,37 @@ def _weight(p):
     s = p["stats"]
     return (s.get("pass_yds", 0) * 0.5 + s.get("rush_yds", 0) + s.get("rec_yds", 0)
             + 20 * (s.get("tackles", 0) + 3 * s.get("sacks", 0) + 3 * s.get("def_int", 0)))
+
+
+def game_availability(league, g):
+    """Injury report for a game, by side: NFL official report lines; CFB news-based statuses
+    (latest report per player within three weeks before kickoff, season-ending all season)."""
+    teams = {"home": g["home_team_id"], "away": g["away_team_id"]}
+    out = {"home": [], "away": []}
+    if league == "nfl":
+        rows = query("SELECT team_id, player_name, position, status, headline AS detail FROM player_status "
+                     "WHERE league = 'nfl' AND source = 'nfl_injury_report' AND source_id = %s", (g["game_id"],))
+        for r in rows:
+            side = "home" if r["team_id"] == teams["home"] else "away"
+            out[side].append(r)
+    else:
+        rows = query(
+            """
+            SELECT DISTINCT ON (team_id, lower(player_name)) team_id, player_name, position, status, games,
+                   headline, url, published
+            FROM player_status
+            WHERE league = 'cfb' AND source = 'news_llm' AND team_id = ANY(%s) AND published < %s
+              AND (published > %s - interval '21 days'
+                   OR (status = 'season-ending' AND extract(year FROM published) = extract(year FROM %s::timestamptz)))
+            ORDER BY team_id, lower(player_name), published DESC
+            """,
+            ([teams["home"], teams["away"]], g["start_time"], g["start_time"], g["start_time"]))
+        for r in rows:
+            if r["status"] in ("returning", "probable"):
+                continue  # back / expected to play
+            side = "home" if r["team_id"] == teams["home"] else "away"
+            out[side].append(r)
+    order = {"season-ending": 0, "out": 1, "suspended": 2, "doubtful": 3, "questionable": 4}
+    for side in out:
+        out[side].sort(key=lambda r: (order.get(r["status"], 9), r["player_name"]))
+    return out

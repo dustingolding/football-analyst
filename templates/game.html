@@ -33,6 +33,32 @@
   {% include "_live_panel.html" %}
 </div>
 
+{% if availability.home or availability.away %}
+<h2>Injury report</h2>
+<div class="injury-grid">
+  {% for side in ('away', 'home') %}
+    <section class="panel">
+      <h3>{{ g[side ~ '_name'] }}</h3>
+      {% for p in availability[side] %}
+        <div class="injury-row">
+          <span><strong>{{ p.player_name }}</strong> <small class="muted">{{ p.position or '' }}</small></span>
+          <span class="status-chip status-{{ p.status|replace(' ', '-') }}">{{ p.status|replace('-', ' ')|title }}{% if p.games %} ({{ p.games }} g){% endif %}</span>
+          {% if league == 'nfl' %}{% if p.detail %}<small class="muted injury-detail">{{ p.detail }}</small>{% endif %}
+          {% elif p.url %}<a class="small injury-detail" href="{{ p.url }}" rel="noopener" target="_blank">{{ p.headline }}</a>{% endif %}
+        </div>
+      {% else %}
+        <p class="muted small">Nothing reported.</p>
+      {% endfor %}
+    </section>
+  {% endfor %}
+</div>
+<p class="muted small">
+  {% if league == 'nfl' %}Official NFL injury report for this game.
+  {% else %}From ESPN news, read by our AI model; it can miss or misread items. A reported absence of the starting
+  QB switches our projection to the backup's rating.{% endif %}
+</p>
+{% endif %}
+
 <h2>Models</h2>
 <div class="table-scroll">
 <table>

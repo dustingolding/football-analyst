@@ -31,6 +31,7 @@ def steps(stage):
         ("nflverse schedule, lines, QBs", ["nflverse.py"]),
         ("ESPN lines", ["espn_odds.py", "--league", "nfl", "cfb", *this_season]),
         ("NFL injury reports / depth charts", ["nflverse_availability.py", *this_season]),
+        ("CFB injury news (LLM)", ["cfb_news.py"] + (["--teams"] if stage != "refresh" else [])),
     ]
     daily = [
         ("CFBD lines", ["cfbd.py", *this_season]),

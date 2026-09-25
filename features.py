@@ -11,6 +11,7 @@ Run after etl.py, the odds loaders and elo.py (Elo ratings are read from predict
 """
 
 import argparse
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -382,6 +383,56 @@ def previous_starters(games, qb_games):
     return pd.DataFrame({"game_id": wide.index, "home_qb": wide.get("home"), "away_qb": wide.get("away")}).reset_index(drop=True)
 
 
+NEWS_OUT = {"out", "doubtful", "suspended", "season-ending"}
+NEWS_WINDOW_DAYS = 21  # a report counts for this long (season-ending: the rest of the season)
+
+
+def news_qb_overrides(conn, games, starters, qb_games):
+    """CFB: if news (cfb_news.py) says a team's presumed starting QB is out before a game, use the
+    backup: the team's QB with the most dropbacks earlier that season, else last season (no
+    history -> the QB prior). A later 'returning' / 'probable' / 'questionable' report cancels it.
+    Uses the already-learned QB-rating effect; there is no injury-news history to learn from."""
+    reports = conn.execute(
+        "SELECT team_id, player_name, status, published FROM player_status "
+        "WHERE league = 'cfb' AND source = 'news_llm' ORDER BY published").fetchall()
+    if not reports:
+        return starters, 0
+    from cfb_epa import qb_key  # QBs are keyed by first initial + last name within a team
+    by_team = defaultdict(list)
+    for team_id, name, status, published in reports:
+        by_team[team_id].append((pd.Timestamp(published), qb_key(name), status))
+    kickoff = games.set_index("game_id")["start_time"]
+    season = games.set_index("game_id")["season"]
+    teams = {"home": games.set_index("game_id")["home_team_id"], "away": games.set_index("game_id")["away_team_id"]}
+    qb = qb_games
+    changed = 0
+    starters = starters.copy()
+    for idx, row in starters.iterrows():
+        game_id = row["game_id"]
+        for side in ("home", "away"):
+            key = row[f"{side}_qb"]
+            team = teams[side].get(game_id)
+            if not isinstance(key, str) or team not in by_team:
+                continue
+            start = kickoff[game_id]
+            latest = None
+            for published, name, status in by_team[team]:
+                if published >= start or name != key.split(":", 1)[1]:
+                    continue
+                if status == "season-ending" and published.year == start.year or \
+                        (start - published).days <= NEWS_WINDOW_DAYS:
+                    latest = status
+            if latest not in NEWS_OUT:
+                continue
+            others = qb[(qb["team"] == team) & (qb["qb"] != key) & (qb["start_time"] < start)]
+            this_season = others[others["start_time"].dt.year >= season[game_id]]
+            pool = this_season if len(this_season) else others[others["start_time"].dt.year >= season[game_id] - 1]
+            backup = pool.groupby("qb")["dropbacks"].sum().idxmax() if len(pool) else None
+            starters.at[idx, f"{side}_qb"] = backup if backup is not None else f"{team}:unknown backup"
+            changed += 1
+    return starters, changed
+
+
 def qb_changed(games, nfl):
     """1 if a team's starting QB differs from its previous game's starter (NFL only)."""
     starters = pd.concat([
@@ -416,6 +467,10 @@ def build(conn, league):
         extra = nfl.drop(columns=["home_qb", "away_qb"])
     else:
         starters = previous_starters(games, qb_games) if len(qb_games) else None
+        if starters is not None:
+            starters, swapped = news_qb_overrides(conn, games, starters, qb_games)
+            if swapped:
+                print(f"[{league}] news: {swapped} starting-QB absences applied (backup's rating used)", flush=True)
     if len(qb_games) and starters is not None:
         rated_games = adjust_qb_games(qb_games, ridge) if ridge is not None else qb_games
         form = form.merge(qb_ratings(games, starters, rated_games, **QB_PARAMS[league]),
