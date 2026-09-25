@@ -40,6 +40,7 @@ PROVIDER = os.getenv("NEWSROOM_PROVIDER", "openai" if OPENAI_KEY else "ollama")
 OPENAI_MODELS = {"writer": os.getenv("NEWSROOM_OPENAI_MODEL", "gpt-5.5"),
                  "verify": os.getenv("NEWSROOM_OPENAI_VERIFY_MODEL", "gpt-5.4-mini")}
 USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "fallbacks": 0}
+LAST_USAGE = {}  # usage of the most recent write() call
 # 1: previews/recaps that pass every check publish on their own; 0: everything waits in /newsroom for review.
 AUTOPUBLISH = os.getenv("NEWSROOM_AUTOPUBLISH", "0") == "1"
 AUTOPUBLISH_RATINGS = AUTOPUBLISH and os.getenv("NEWSROOM_AUTOPUBLISH_RATINGS", "0") == "1"  # columns: review by default
@@ -1059,6 +1060,16 @@ def check(kind, article, facts):
 def write(kind, facts, retries=3, note=None):
     """Draft, check and revise. `note` is an editor's instruction from /admin regenerate.
     Returns (article, problems, attempts)."""
+    before = dict(USAGE)
+    try:
+        return _write(kind, facts, retries, note)
+    finally:  # tokens this article cost (writing + checking), stored with it for the Grafana newsroom panel
+        LAST_USAGE.clear()
+        LAST_USAGE.update({k: USAGE[k] - before[k] for k in ("calls", "input_tokens", "output_tokens")},
+                          model=OPENAI_MODELS["writer"] if PROVIDER == "openai" and OPENAI_KEY else MODEL)
+
+
+def _write(kind, facts, retries, note):
     lo, hi = WORDS[kind]
     task = TASKS[kind].format(lo=lo, hi=hi)
     if note:
@@ -1106,7 +1117,8 @@ def save(conn, league, kind, game_id, article, facts, problems, attempts, publis
         """,
         (league, kind, game_id, key or game_id, season, week, slug, (a.get("headline") or f"Untitled {kind}")[:200],
          a.get("dek"), a.get("body") or "", json.dumps(facts, default=str),
-         json.dumps({"problems": problems, "attempts": attempts}), status, writer_model(), status))
+         json.dumps({"problems": problems, "attempts": attempts, "usage": dict(LAST_USAGE)}), status, writer_model(),
+         status))
     return status, slug
 
 
@@ -1202,7 +1214,8 @@ def regenerate(conn, a):
                   status = 'review', published_at = NULL, updated_at = now(), regen_requested_at = NULL
            WHERE id = %s AND status = 'regenerating'""",
         (article["headline"][:200], article.get("dek"), article.get("body") or "", json.dumps(facts, default=str),
-         json.dumps({"problems": problems, "attempts": attempts, "regenerated": True, "note": a["regen_note"]}),
+         json.dumps({"problems": problems, "attempts": attempts, "regenerated": True, "note": a["regen_note"],
+                     "usage": dict(LAST_USAGE)}),
          writer_model(), slug, a["id"]))
     print(f"[newsroom] regenerated {a['league']} {a['kind']} #{a['id']} ({time.time() - t:.0f}s) "
           f"{problems or 'checks passed'}", flush=True)

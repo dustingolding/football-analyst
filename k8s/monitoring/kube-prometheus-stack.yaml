@@ -1,0 +1,91 @@
+# Prometheus + Grafana + node/kube-state exporters, installed by k3s's helm-controller (no helm CLI needed).
+#   kubectl apply -f k8s/monitoring/   (namespace first; Secrets grafana-admin and grafana-postgres are created by hand)
+# Grafana: http://192.168.10.9:30300 (LAN only; NodePort). Dashboards are ConfigMaps labeled grafana_dashboard=1.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: kube-prometheus-stack
+  namespace: kube-system
+spec:
+  repo: https://prometheus-community.github.io/helm-charts
+  chart: kube-prometheus-stack
+  targetNamespace: monitoring
+  valuesContent: |-
+    fullnameOverride: kps
+    crds:
+      enabled: true
+    defaultRules:
+      create: false
+    alertmanager:
+      enabled: false
+    # k3s runs these inside the k3s binary; there are no separate endpoints to scrape
+    kubeControllerManager: {enabled: false}
+    kubeScheduler: {enabled: false}
+    kubeProxy: {enabled: false}
+    kubeEtcd: {enabled: false}
+    prometheus:
+      prometheusSpec:
+        retention: 30d
+        retentionSize: 18GB
+        scrapeInterval: 30s
+        serviceMonitorSelectorNilUsesHelmValues: false
+        podMonitorSelectorNilUsesHelmValues: false
+        ruleSelectorNilUsesHelmValues: false
+        resources:
+          requests: {cpu: 200m, memory: 1Gi}
+          limits: {memory: 4Gi}
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: local-path
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests: {storage: 20Gi}
+    grafana:
+      admin:
+        existingSecret: grafana-admin
+        userKey: admin-user
+        passwordKey: admin-password
+      envFromSecrets:
+        - name: grafana-postgres
+      service:
+        type: NodePort
+        nodePort: 30300
+      persistence:
+        enabled: true
+        storageClassName: local-path
+        size: 2Gi
+      grafana.ini:
+        analytics: {reporting_enabled: false, check_for_updates: false}
+        users: {allow_sign_up: false}
+        auth.anonymous: {enabled: false}
+        date_formats: {default_timezone: America/New_York}
+      sidecar:
+        dashboards:
+          enabled: true
+          label: grafana_dashboard
+          labelValue: "1"
+          searchNamespace: monitoring
+          folderAnnotation: grafana_folder
+          provider:
+            foldersFromFilesStructure: true
+      additionalDataSources:
+        - name: Loki
+          type: loki
+          uid: loki
+          url: http://loki.monitoring.svc.cluster.local:3100
+          access: proxy
+        - name: SidelineWire prod DB
+          type: grafana-postgresql-datasource
+          uid: pg-prod
+          url: $PG_HOST
+          user: $PG_USER
+          secureJsonData: {password: $PG_PASSWORD}
+          jsonData: {database: football_prod, sslmode: disable, postgresVersion: 1600, timescaledb: false}
+        - name: SidelineWire dev DB
+          type: grafana-postgresql-datasource
+          uid: pg-dev
+          url: $PG_HOST
+          user: $PG_USER
+          secureJsonData: {password: $PG_PASSWORD}
+          jsonData: {database: football, sslmode: disable, postgresVersion: 1600, timescaledb: false}

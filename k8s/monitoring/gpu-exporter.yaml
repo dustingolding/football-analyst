@@ -1,0 +1,49 @@
+# GPU metrics (GTX 1660 Ti) from nvidia-smi. The one GPU is allocated to Ollama, so this pod doesn't request
+# nvidia.com/gpu; the nvidia runtime class + NVIDIA_VISIBLE_DEVICES just give it nvidia-smi read access.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-exporter
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gpu-exporter}
+  template:
+    metadata:
+      labels: {app: gpu-exporter}
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: exporter
+          image: utkuozdemir/nvidia_gpu_exporter:1.3.1
+          env:
+            - {name: NVIDIA_VISIBLE_DEVICES, value: all}
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: utility}
+          ports:
+            - {name: metrics, containerPort: 9835}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-exporter
+  namespace: monitoring
+  labels: {app: gpu-exporter}
+spec:
+  selector: {app: gpu-exporter}
+  ports:
+    - {name: metrics, port: 9835, targetPort: metrics}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gpu-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels: {app: gpu-exporter}
+  endpoints:
+    - {port: metrics, interval: 30s}

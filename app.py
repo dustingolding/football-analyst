@@ -883,7 +883,9 @@ def inject_globals():
 
 
 # The JSON API for apps (/api/v1); registered last because api.py imports this module.
+import metrics  # noqa: E402
 from api import bp as api_v1  # noqa: E402
 from newsroom_web import bp as newsroom_bp  # noqa: E402
 app.register_blueprint(api_v1)
 app.register_blueprint(newsroom_bp)
+metrics.init(app)
