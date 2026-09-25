@@ -181,9 +181,16 @@ def team_lines(conn, g, side, summary, ranks, n_teams, kind):
         out.append(f"{t} defense rank in our opponent-adjusted efficiency (EPA per play): {r['def']} of {n_teams}")
     stats = s.get("team_stats") or {}
     if kind == "preview":
-        results = recent_results(conn, g["league"], tid, g["season"], g["start_time"])
+        results = recent_results(conn, g["league"], tid, g["season"], g["start_time"], n=6)
         if results:
-            out.append(f"{t} most recent results: " + "; ".join(results))
+            out.append(f"{t} last game: {results[0]}")
+            if len(results) > 1:
+                out.append(f"{t} game before that: {results[1]}")
+            streak = 1
+            while streak < len(results) and results[streak][0] == results[0][0]:
+                streak += 1
+            word = {"W": "won", "L": "lost", "T": "tied"}[results[0][0]]
+            out.append(f"{t} current streak: {word} {streak} in a row" if streak > 1 else f"{t} current streak: {word} last game only")
         out += [f"{t} {label}: {stats[k]}" for k, label in PREVIEW_STATS.items() if k in stats]
         out += [f"{t} season {LEADER_LABELS[k]} leader (season totals, not per game): {v}"
                 for k, v in (s.get("leaders") or {}).items()]
@@ -229,8 +236,8 @@ def prediction_lines(conn, g, recap=False):
         if line.get("spread") is not None and not recap:
             edge = margin + line["spread"]
             if abs(edge) >= 1.5:
-                out.append(f"Our model vs Vegas: our model rates {h if edge > 0 else a} {abs(edge):.1f} points better "
-                           "than the betting line does")
+                out.append(f"Our model vs Vegas: our model likes {h if edge > 0 else a} more than Vegas does, by "
+                           f"{abs(edge):.1f} points")
             else:
                 out.append("Our model vs Vegas: our model agrees closely with the betting line")
     return out, info
@@ -393,7 +400,12 @@ def editorial_facts(conn, league):
                                                  "WHERE league = %s", (league,))}
     done = game_rows(conn, "g.league = %s AND g.season = %s AND g.completed AND g.season_type = 2 "
                            "ORDER BY g.start_time", (league, season))
-    week = max((g["week"] for g in done), default=None)
+    # the last fully finished week (ignore unfinished games older than 2 days: postponed/canceled)
+    open_weeks = {r["week"] for r in rows(conn, "SELECT DISTINCT week FROM games WHERE league = %s AND season = %s "
+                                                "AND season_type = 2 AND NOT completed AND start_time > now() - interval '2 days'",
+                                          (league, season))}
+    week = max((g["week"] for g in done if g["week"] not in open_weeks), default=None)
+    done = [g for g in done if g["week"] <= (week or 0)]
     rec = {}
     for g in done:
         for side, other in (("home", "away"), ("away", "home")):
@@ -621,7 +633,8 @@ def anchored_number_problems(text, facts):
                 problems.append(f"{val} is not a per-game figure in the facts; season totals are not averages "
                                 f"(in: \"{sentence.strip()[:90]}\")")
                 continue
-            stem = next((st for st in STAT_STEMS if st in following), None)
+            play_distance = re.match(r"\s?-?\s?yard\b", sentence[pos + len(val):])  # "15-yard pass": a play, not a stat
+            stem = None if play_distance else next((st for st in STAT_STEMS if st in following), None)
             if stem and not any(n in nums and any(k in ln for k in STAT_STEMS[stem]) and any(re.search(r"(?<!\w)" + re.escape(ph) + r"(?!\w)", ln)
                                                                  for ph in before[1] + (after[1] if after else []))
                                 for ln, nums in lines):

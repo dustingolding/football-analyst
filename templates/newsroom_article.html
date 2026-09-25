@@ -4,6 +4,7 @@
 <p><a href="{{ url_for('newsroom_web.queue') }}">← Newsroom</a></p>
 <div class="page-head"><div><h1>{{ a.headline }}</h1>
   <p class="muted">{{ a.league|upper }} {{ a.kind_label }} · status <strong>{{ a.status }}</strong> · written {{ a.created_at|kickoff }} by {{ a.model }}
+  · <a href="{{ url_for('newsroom_web.review_preview', article_id=a.id) }}">preview as readers see it</a>
   {% if a.status == 'published' %}· <a href="{{ url_for('newsroom_web.article_page', league=a.league, slug=a.slug) }}">view live</a>{% endif %}</p></div></div>
 
 {% set problems = (a.checks or {}).get('problems') or [] %}

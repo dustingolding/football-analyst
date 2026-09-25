@@ -116,6 +116,14 @@ def review(article_id):
                            facts_text=facts_text(a["facts"]))
 
 
+@bp.route("/newsroom/<int:article_id>/preview")
+def review_preview(article_id):
+    a = web_data.article(article_id=article_id, published_only=False)
+    if not a:
+        abort(404)
+    return render_article(a, review=True)
+
+
 def facts_text(facts):
     out = []
     for key, value in (facts or {}).items():
