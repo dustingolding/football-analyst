@@ -262,6 +262,18 @@ CREATE TABLE IF NOT EXISTS head_coaches (
     PRIMARY KEY (league, season, team_id)
 );
 
+CREATE TABLE IF NOT EXISTS draft_picks (
+    league      TEXT    NOT NULL,
+    season      INTEGER NOT NULL,     -- draft year (the rookie's first season)
+    pick        INTEGER NOT NULL,     -- overall pick
+    round       INTEGER,
+    team_id     TEXT,
+    player_id   TEXT,                 -- gsis id
+    name        TEXT,
+    position    TEXT,
+    PRIMARY KEY (league, season, pick)
+);
+
 -- Preseason team ratings from last season + offseason movement (offseason.py), fit only on
 -- earlier seasons, with the rating broken down into contribution groups.
 CREATE TABLE IF NOT EXISTS team_preseason (

@@ -182,6 +182,47 @@ def load_affiliations(conn, abbrs, start, end):
     print(f"[nflverse_box] {len(divisions)} teams' divisions for {start}-{end}", flush=True)
 
 
+# Pro Football Reference codes used by the draft file -> nflverse codes
+PFR_CODES = {"GNB": "GB", "KAN": "KC", "NOR": "NO", "NWE": "NE", "SDG": "SD", "SFO": "SF", "TAM": "TB",
+             "LVR": "LV", "LAR": "LA"}
+
+
+def load_draft_and_coaches(conn, abbrs, refresh):
+    """Draft picks (2005+) and each team's head coach per season (the week-1 coach)."""
+    path = CACHE_DIR / "draft_picks.csv"
+    if refresh or not path.exists():
+        response = requests.get(f"{RELEASES}/draft_picks/draft_picks.csv", timeout=(10, 300))
+        response.raise_for_status()
+        path.write_bytes(response.content)
+    draft = pd.read_csv(path, low_memory=False)
+    draft = draft[draft["season"] >= 2005]
+    picks = []
+    for r in draft.to_dict("records"):
+        team_id = abbrs.get(PFR_CODES.get(r["team"], r["team"]))
+        picks.append(("nfl", int(r["season"]), int(r["pick"]), int(r["round"]), team_id,
+                      r["gsis_id"] if isinstance(r.get("gsis_id"), str) else None,
+                      r.get("pfr_player_name"), r.get("position")))
+
+    coaches = {}
+    games = sorted(nflverse.stored_rows(conn), key=lambda r: (r["season"], r.get("gameday") or ""))
+    for r in games:
+        if r.get("game_type") != "REG" or not r.get("season", "").isdigit():
+            continue
+        for side in ("home", "away"):
+            team_id, coach = abbrs.get(r[f"{side}_team"]), r.get(f"{side}_coach")
+            key = (int(r["season"]), team_id)
+            if team_id and coach and key not in coaches:
+                coaches[key] = ("nfl", key[0], team_id, coach, None, None)
+    with conn.transaction(), conn.cursor() as cur:
+        cur.execute("DELETE FROM draft_picks WHERE league = 'nfl'")
+        cur.execute("DELETE FROM head_coaches WHERE league = 'nfl'")
+        cur.executemany("INSERT INTO draft_picks (league, season, pick, round, team_id, player_id, name, position) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", picks)
+        cur.executemany("INSERT INTO head_coaches (league, season, team_id, coach, games, hire_date) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)", list(coaches.values()))
+    print(f"[nflverse_box] {len(picks)} draft picks, {len(coaches)} head-coach seasons", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Load NFL box scores, rosters and divisions from nflverse.")
     parser.add_argument("--start", type=int, default=2005)
@@ -195,6 +236,7 @@ def main():
         for season in range(args.start, args.end + 1):
             load_season(conn, season, args.refresh or season >= current_season(), games, abbrs)
         load_affiliations(conn, abbrs, 2005, args.end)
+        load_draft_and_coaches(conn, abbrs, args.refresh or args.end >= current_season())
 
 
 if __name__ == "__main__":

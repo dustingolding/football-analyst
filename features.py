@@ -326,21 +326,27 @@ def preseason_context(conn, league, games):
         "prev_sp_defense": prev["sp_defense"].to_numpy(), "recruiting_avg": recruiting_avg,
         "talent": current["talent"].to_numpy(), "returning_ppa_pct": current["returning_ppa_pct"].to_numpy(),
         "returning_passing_ppa_pct": current["returning_passing_ppa_pct"].to_numpy(),
-        "preseason_rating": preseason_ratings(conn, league, teams),
     })
 
 
 PRESEASON_MISSING = -25.0  # teams without a preseason rating (FCS, first FBS season) are rated well below FBS
 
 
-def preseason_ratings(conn, league, teams):
-    """Each team's preseason rating (offseason.py) for the game's season; seasons with no
-    ratings at all stay NaN, teams missing in a rated season get PRESEASON_MISSING."""
+def preseason_ratings(conn, league, games):
+    """Per (game_id, team): the team's preseason rating (offseason.py) for the game's season.
+    Seasons with no ratings stay NaN; teams missing in a rated season (CFB: FCS, first FBS
+    season) get PRESEASON_MISSING."""
     rows = conn.execute("SELECT season, team_id, rating FROM team_preseason WHERE league = %s", (league,)).fetchall()
+    if not rows:
+        return None
     ratings = {(s, t): r for s, t, r in rows}
     rated_seasons = {s for s, _, _ in rows}
-    return np.array([ratings.get((s, t), PRESEASON_MISSING) if s in rated_seasons else np.nan
-                     for s, t in zip(teams["season"], teams["team"])], dtype=float)
+    teams = pd.concat([
+        games[["game_id", "season", f"{side}_team_id"]].rename(columns={f"{side}_team_id": "team"}) for side in ("home", "away")
+    ])
+    teams["preseason_rating"] = [ratings.get((s, t), PRESEASON_MISSING) if s in rated_seasons else np.nan
+                                 for s, t in zip(teams["season"], teams["team"])]
+    return teams[["game_id", "team", "preseason_rating"]]
 
 
 def previous_starters(games, qb_games):
@@ -402,6 +408,9 @@ def build(conn, league):
     context = preseason_context(conn, league, games)
     if context is not None:
         form = form.merge(context, on=["game_id", "team"], how="left")
+    preseason = preseason_ratings(conn, league, games)
+    if preseason is not None:
+        form = form.merge(preseason, on=["game_id", "team"], how="left")
 
     team_cols = [c for c in form.columns if c not in ("game_id", "team", "start_time")]
     df = games.copy()

@@ -6,7 +6,7 @@
 <div class="page-head">
   <div>
     <h1>{{ season }} preseason ratings</h1>
-    <p class="muted">Last season plus the offseason: returning production, transfer portal, recruiting and coaching changes.</p>
+    <p class="muted">Last season plus the offseason: {{ 'returning production, transfer portal, recruiting and coaching changes' if league == 'cfb' else 'returning production, free agency and trades, the draft and coaching changes' }}.</p>
   </div>
   <form class="picker" method="get">
     <select name="season" onchange="this.form.submit()" aria-label="Season">
@@ -24,8 +24,8 @@
       <th title="Projected points vs an average FBS team on a neutral field">Rating</th>
       <th title="Last season's rating">Last yr</th>
       <th>Change</th>
-      {% for g in groups %}<th title="Points from {{ g }}">{{ g|capitalize }}</th>{% endfor %}
-      <th title="Transfers in / out">Portal</th>
+      {% for g in groups %}<th title="Points from {{ labels[g]|lower }}">{{ labels[g] }}</th>{% endfor %}
+      <th title="{{ 'Transfers in / out' if league == 'cfb' else 'Veterans who arrived' }}">{{ 'Portal' if league == 'cfb' else 'Arrivals' }}</th>
       <th title="This season so far">Actual</th>
     </tr>
   </thead>
@@ -38,17 +38,24 @@
       <td class="muted">{{ '%+.1f'|format(r.baseline) if r.baseline is not none else '–' }}</td>
       <td>{{ contrib(r.change) if r.change is not none else '–' }}</td>
       {% for g in groups %}<td>{{ contrib(r.contributions.get(g, 0)) }}</td>{% endfor %}
-      <td class="nowrap muted">{{ r.n_in }} / {{ r.n_out }}</td>
+      <td class="nowrap muted">{{ r.n_in }}{% if league == 'cfb' %} / {{ r.n_out }}{% endif %}</td>
       <td>{{ '%+.1f'|format(r.actual) if r.actual is not none else '–' }}</td>
     </tr>
   {% endfor %}
   </tbody>
 </table></div>
 <p class="muted small">
-  Ratings are points better or worse than an average FBS team on a neutral field. Each season's model is fit only on
-  earlier seasons. Group columns show how many points each part adds or takes away versus an average team:
-  history (last two seasons, efficiency), recruiting (four-class average, talent), returning production,
-  transfers (incoming production weighted by the old team's level, 247 ratings in and out), and coaching (new head coach).
-  Tested on 2021–2025, preseason ratings correlate 0.71 with how teams actually played, versus 0.65 for last season alone.
+  Ratings are points better or worse than an average {{ 'FBS' if league == 'cfb' else 'NFL' }} team on a neutral field.
+  Each season's model is fit only on earlier seasons. Group columns show how many points each part adds or takes away
+  versus an average team (coaching: versus keeping the same coach).
+  {% if league == 'cfb' %}
+  History is the last two seasons and efficiency; recruiting is the four-class average and talent; transfers are incoming
+  production weighted by the old team's level plus 247 ratings in and out. On 2023–2025, preseason ratings correlate
+  0.69 with how teams actually played, versus 0.62 for last season alone.
+  {% else %}
+  History is the last two seasons and efficiency; draft is the value of the team's picks; free agency is veterans' production
+  last season with other teams, weighted by those teams' level. The NFL is much harder to project than college: on 2021–2025,
+  preseason ratings correlate 0.44 with how teams actually played, versus 0.39 for last season alone.
+  {% endif %}
 </p>
 {% endblock %}

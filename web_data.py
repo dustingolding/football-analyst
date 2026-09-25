@@ -625,3 +625,54 @@ def team_transfers(league, season, team_id):
 def team_preseason(league, season, team_id):
     row = next((r for r in preseason_table(league, season) if r["team_id"] == team_id), None)
     return row
+
+
+def _stat_line(stats):
+    stats = stats or {}
+    return ", ".join(x for x in (
+        f"{stats['pass_yds']:,.0f} pass yds" if stats.get("pass_yds", 0) >= 300 else "",
+        f"{stats['rush_yds']:,.0f} rush yds" if stats.get("rush_yds", 0) >= 150 else "",
+        f"{stats['rec_yds']:,.0f} rec yds" if stats.get("rec_yds", 0) >= 150 else "",
+        f"{stats['tackles']:.0f} tkl" if stats.get("tackles", 0) >= 20 else "",
+        f"{stats.get('sacks', 0):.1f} sacks" if stats.get("sacks", 0) >= 2 else "",
+        f"{stats.get('def_int', 0):.0f} INT" if stats.get("def_int", 0) >= 2 else "",
+    ) if x)
+
+
+def nfl_moves(season, team_id):
+    """NFL offseason for one team: veterans who arrived (produced elsewhere last season), players who
+    left (produced here last season, not on this season's roster), and the draft class."""
+    last = player_seasons("nfl", season - 1)
+    roster = {r["player_id"]: r for r in rosters("nfl", season)}
+    team_map = teams("nfl")
+    arrived, departed = [], []
+    for pid, r in roster.items():
+        prev = last.get(pid)
+        if r["team_id"] == team_id and prev and prev["team_id"] != team_id:
+            line = _stat_line(prev["stats"])
+            if line:
+                arrived.append({"name": r["name"], "position": r["position"], "other_id": prev["team_id"],
+                                "other": team_map.get(prev["team_id"]), "last_season": line, "_v": _weight(prev)})
+    for pid, prev in last.items():
+        if prev["team_id"] != team_id:
+            continue
+        now = roster.get(pid)
+        if now and now["team_id"] == team_id:
+            continue
+        line = _stat_line(prev["stats"])
+        if line:
+            departed.append({"name": prev["name"], "position": prev.get("position"),
+                             "other_id": now["team_id"] if now else None,
+                             "other": team_map.get(now["team_id"]) if now else None,
+                             "last_season": line, "_v": _weight(prev)})
+    draft = query("SELECT pick, round, name, position FROM draft_picks WHERE league = 'nfl' AND season = %s "
+                  "AND team_id = %s ORDER BY pick", (season, team_id))
+    key = lambda r: -r["_v"]  # noqa: E731
+    return sorted(arrived, key=key), sorted(departed, key=key), draft
+
+
+def _weight(p):
+    """Rough production size for ordering lists (yards + 20 per tackle/sack)."""
+    s = p["stats"]
+    return (s.get("pass_yds", 0) * 0.5 + s.get("rush_yds", 0) + s.get("rec_yds", 0)
+            + 20 * (s.get("tackles", 0) + 3 * s.get("sacks", 0) + 3 * s.get("def_int", 0)))

@@ -1,4 +1,5 @@
-{# Contribution chips: points vs an average FBS team, by group. #}
+{# Contribution chips: points vs an average team, by group. Values under 0.05 show as 0.0 (no "-0.0"). #}
 {% macro contrib(value) -%}
-  <span class="contrib {{ 'pos' if value > 0.25 else ('neg' if value < -0.25 else 'flat') }}">{{ '%+.1f'|format(value) }}</span>
+  {%- set v = 0.0 if value|abs < 0.05 else value -%}
+  <span class="contrib {{ 'pos' if v > 0.25 else ('neg' if v < -0.25 else 'flat') }}">{{ '0.0' if v == 0 else '%+.1f'|format(v) }}</span>
 {%- endmacro %}

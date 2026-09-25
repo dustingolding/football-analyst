@@ -17,7 +17,7 @@
 </section>
 
 <div class="tabs">
-  {% for key, label in [('home', 'Home'), ('schedule', 'Schedule'), ('stats', 'Stats'), ('roster', 'Roster')] + ([('offseason', 'Offseason')] if league == 'cfb' else []) %}
+  {% for key, label in [('home', 'Home'), ('schedule', 'Schedule'), ('stats', 'Stats'), ('roster', 'Roster'), ('offseason', 'Offseason')] %}
     <a class="{{ 'active' if tab == key }}" href="{{ url_for('team_page', league=league, team_id=team_id, season=season, tab=key) }}">{{ label }}</a>
   {% endfor %}
 </div>
@@ -150,32 +150,42 @@
 {% elif tab == 'offseason' %}
   {% if preseason %}
     <div class="cards">
-      <div class="card"><span>Preseason rating</span><strong>{{ '%+.1f'|format(preseason.rating) }}</strong><small class="muted">#{{ preseason.rank }} in FBS · pts vs average</small></div>
+      <div class="card"><span>Preseason rating</span><strong>{{ '%+.1f'|format(preseason.rating) }}</strong><small class="muted">#{{ preseason.rank }} in {{ 'FBS' if league == 'cfb' else 'the NFL' }} · pts vs average</small></div>
       <div class="card"><span>Last season</span><strong>{{ '%+.1f'|format(preseason.baseline) }}</strong><small class="muted">change {{ '%+.1f'|format(preseason.change) }}</small></div>
-      <div class="card"><span>Transfers in / out</span><strong>{{ preseason.n_in }} / {{ preseason.n_out }}</strong><small class="muted">transfer portal</small></div>
+      {% if league == 'cfb' %}<div class="card"><span>Transfers in / out</span><strong>{{ preseason.n_in }} / {{ preseason.n_out }}</strong><small class="muted">transfer portal</small></div>
+      {% else %}<div class="card"><span>Draft picks</span><strong>{{ draft|length }}</strong><small class="muted">{% if draft %}first at #{{ draft[0].pick }}{% endif %}</small></div>{% endif %}
       <div class="card"><span>This season so far</span><strong>{{ '%+.1f'|format(preseason.actual) if preseason.actual is not none else '–' }}</strong><small class="muted">actual rating</small></div>
     </div>
     <h2>Where the rating comes from</h2>
     <div class="panel contrib-list">
-      {% for g, label in [('history', 'Program history (last two seasons, efficiency)'), ('recruiting', 'Recruiting and talent'), ('returning', 'Returning production'), ('transfers', 'Transfer portal'), ('coaching', 'Coaching change')] %}
+      {% for g, label in [('history', ('Program' if league == 'cfb' else 'Team') ~ ' history (last two seasons, efficiency)'), ('recruiting', 'Recruiting and talent' if league == 'cfb' else 'Draft'), ('returning', 'Returning production'), ('transfers', 'Transfer portal' if league == 'cfb' else 'Free agency and trades'), ('coaching', 'Coaching change')] %}
         <div><span>{{ label }}</span>{{ contrib(preseason.contributions.get(g, 0)) }}</div>
       {% endfor %}
     </div>
-    <p class="muted small">Points versus an average FBS team. See the <a href="{{ url_for('preseason_page', league=league, season=season) }}">{{ season }} preseason ratings</a> for every team.</p>
+    <p class="muted small">Points versus an average {{ 'FBS' if league == 'cfb' else 'NFL' }} team. See the <a href="{{ url_for('preseason_page', league=league, season=season) }}">{{ season }} preseason ratings</a> for every team.</p>
   {% endif %}
   {% set incoming, outgoing = transfers %}
-  {% for title, rows, verb in [('Incoming transfers', incoming, 'From'), ('Outgoing transfers', outgoing, 'To')] %}
+  {% if league == 'nfl' %}
+    <h2>Draft class <small class="muted">· {{ draft|length }}</small></h2>
+    {% if draft %}<div class="table-scroll"><table class="compact">
+      <thead><tr><th>Pick</th><th>Round</th><th>Player</th><th>Pos</th></tr></thead>
+      <tbody>{% for d in draft %}<tr><td><strong>{{ d.pick }}</strong></td><td>{{ d.round }}</td><td>{{ d.name }}</td><td>{{ d.position or '' }}</td></tr>{% endfor %}</tbody>
+    </table></div>{% else %}<p class="muted">No picks.</p>{% endif %}
+  {% endif %}
+  {% set in_title = 'Incoming transfers' if league == 'cfb' else 'Veterans who arrived' %}
+  {% set out_title = 'Outgoing transfers' if league == 'cfb' else 'Players who left' %}
+  {% for title, rows, verb in [(in_title, incoming, 'From'), (out_title, outgoing, 'To')] %}
     <h2>{{ title }} <small class="muted">· {{ rows|length }}</small></h2>
     {% if rows %}
     <div class="table-scroll"><table class="compact">
-      <thead><tr><th>Player</th><th>Pos</th><th title="247 transfer rating">Rating</th><th>{{ verb }}</th><th>Last season</th></tr></thead>
+      <thead><tr><th>Player</th><th>Pos</th>{% if league == 'cfb' %}<th title="247 transfer rating">Rating</th>{% endif %}<th>{{ verb }}</th><th>Last season</th></tr></thead>
       <tbody>
       {% for t in rows %}
         <tr>
           <td class="nowrap"><strong>{{ t.name }}</strong>{% if t.stars %} <small class="muted">{{ '★' * t.stars }}</small>{% endif %}</td>
           <td>{{ t.position or '' }}</td>
-          <td>{{ '%.2f'|format(t.rating) if t.rating else '–' }}</td>
-          <td class="nowrap">{% if t.other and t.other_id and t.other.logo is defined %}{{ team_link(league, t.other_id, t.other, short=True) }}{% elif t.other %}{{ t.other.display_name }}{% else %}<span class="muted">Undecided</span>{% endif %}</td>
+          {% if league == 'cfb' %}<td>{{ '%.2f'|format(t.rating) if t.rating else '–' }}</td>{% endif %}
+          <td class="nowrap">{% if t.other and t.other_id and t.other.logo is defined %}{{ team_link(league, t.other_id, t.other, short=True) }}{% elif t.other %}{{ t.other.display_name }}{% else %}<span class="muted">{{ 'Undecided' if league == 'cfb' else 'Not on a roster' }}</span>{% endif %}</td>
           <td class="muted">{{ t.last_season }}</td>
         </tr>
       {% endfor %}
