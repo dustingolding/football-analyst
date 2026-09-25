@@ -38,9 +38,14 @@ VALIDATION = 2022      # test = everything after
 MODEL_DIR = Path(__file__).parent / "models"
 
 LINE_FEATURES = ["line_spread", "line_total", "line_open_spread", "line_home_prob"]
-# Kept in game_features for display, but they added no signal in testing and made XGBoost
-# overfit: the supporting-cast ridge ratings (pass protection, YAC, run game).
-MODEL_EXCLUDE = re.compile(r"ridge_(off|def|net)_(pass_epa|rush_epa|sack_rate|yac_epa|rush_success)$")
+# Kept in game_features for display, but they added no signal in testing or made XGBoost
+# overfit: the supporting-cast ridge ratings (pass protection, YAC, run game), and the
+# per-side / per-unit injury-report detail.
+MODEL_EXCLUDE = re.compile(r"ridge_(off|def|net)_(pass_epa|rush_epa|sack_rate|yac_epa|rush_success)$"
+                           # injury-report detail: models get only the four summary differences
+                           r"|^(home|away)_(starters_out_off|starters_out_def|ol_out|skill_out|front_out|db_out"
+                           r"|starters_questionable|missing_off_prod|missing_def_prod)$"
+                           r"|^diff_(ol_out|skill_out|front_out|db_out|starters_questionable)$")
 BASE_PARAMS = {
     "n_estimators": 3000, "learning_rate": 0.02, "max_depth": 3, "min_child_weight": 10,
     "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0, "early_stopping_rounds": 150,
@@ -52,7 +57,9 @@ LINEAR_FEATURES = {
             "diff_qb_rating", "diff_qb_vs_prev", "diff_qb_changed", "diff_rest_days", "neutral_site",
             # CFB preseason context (absent for the NFL, so skipped there)
             "diff_prev_sp_rating", "diff_recruiting_avg", "diff_talent", "diff_returning_ppa_pct",
-            "diff_preseason_rating"],
+            "diff_preseason_rating",
+            # NFL availability: starters and production ruled out on the injury report
+            "diff_starters_out_off", "diff_starters_out_def", "diff_missing_off_prod", "diff_missing_def_prod"],
     "total": ["home_ewm_points_for", "away_ewm_points_for", "home_ewm_points_against",
               "away_ewm_points_against", "dome", "wind", "temp"],
 }

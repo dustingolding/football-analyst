@@ -1,0 +1,56 @@
+# Local LLM server on the GTX 1660 Ti (6 GB): a 7-8B model at 4-bit fits. Shared by the dev and
+# prod pipelines at http://ollama.ai.svc.cluster.local:11434 (not exposed outside the cluster).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: ai
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # one GPU
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - {name: http, containerPort: 11434}
+          env:
+            - {name: OLLAMA_KEEP_ALIVE, value: "30m"}
+            - {name: OLLAMA_NUM_PARALLEL, value: "2"}
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: 12Gi
+          volumeMounts:
+            - {name: models, mountPath: /root/.ollama}
+          readinessProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: 10
+      volumes:
+        - name: models
+          hostPath: {path: /srv/ollama, type: Directory}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: ai
+spec:
+  selector:
+    app: ollama
+  ports:
+    - {name: http, port: 11434, targetPort: http}

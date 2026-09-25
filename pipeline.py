@@ -30,6 +30,7 @@ def steps(stage):
         ("clean games/teams", ["etl.py"]),
         ("nflverse schedule, lines, QBs", ["nflverse.py"]),
         ("ESPN lines", ["espn_odds.py", "--league", "nfl", "cfb", *this_season]),
+        ("NFL injury reports / depth charts", ["nflverse_availability.py", *this_season]),
     ]
     daily = [
         ("CFBD lines", ["cfbd.py", *this_season]),

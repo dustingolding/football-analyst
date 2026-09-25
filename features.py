@@ -332,6 +332,22 @@ def preseason_context(conn, league, games):
 PRESEASON_MISSING = -25.0  # teams without a preseason rating (FCS, first FBS season) are rated well below FBS
 
 
+AVAILABILITY = ["starters_out_off", "starters_out_def", "ol_out", "skill_out", "front_out", "db_out",
+                "starters_questionable", "missing_off_prod", "missing_def_prod"]
+
+
+def availability(conn, league):
+    """Per (game_id, team): injury-report availability (nflverse_availability.py), NFL only."""
+    rows = conn.execute("SELECT game_id, team_id, stats FROM team_game_stats WHERE league = %s AND source = 'availability'",
+                        (league,)).fetchall()
+    if not rows:
+        return None
+    frame = pd.DataFrame([r[2] for r in rows]).reindex(columns=AVAILABILITY).astype(float)
+    frame.insert(0, "game_id", [r[0] for r in rows])
+    frame.insert(1, "team", [r[1] for r in rows])
+    return frame
+
+
 def preseason_ratings(conn, league, games):
     """Per (game_id, team): the team's preseason rating (offseason.py) for the game's season.
     Seasons with no ratings stay NaN; teams missing in a rated season (CFB: FCS, first FBS
@@ -411,6 +427,9 @@ def build(conn, league):
     preseason = preseason_ratings(conn, league, games)
     if preseason is not None:
         form = form.merge(preseason, on=["game_id", "team"], how="left")
+    injuries = availability(conn, league)
+    if injuries is not None:
+        form = form.merge(injuries, on=["game_id", "team"], how="left")
 
     team_cols = [c for c in form.columns if c not in ("game_id", "team", "start_time")]
     df = games.copy()
