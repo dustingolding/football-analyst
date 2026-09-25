@@ -1,0 +1,105 @@
+# Logs: Loki (single instance, 14 days on local disk) + Grafana Alloy tailing every pod through the API server,
+# so scheduled-job logs survive after the pods are cleaned up. Query them in Grafana (Explore -> Loki).
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: loki
+  namespace: kube-system
+spec:
+  repo: https://grafana.github.io/helm-charts
+  chart: loki
+  targetNamespace: monitoring
+  valuesContent: |-
+    deploymentMode: SingleBinary
+    loki:
+      auth_enabled: false
+      commonConfig:
+        replication_factor: 1
+      storage:
+        type: filesystem
+      schemaConfig:
+        configs:
+          - from: "2024-01-01"
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index: {prefix: index_, period: 24h}
+      limits_config:
+        retention_period: 336h
+      compactor:
+        retention_enabled: true
+        delete_request_store: filesystem
+    singleBinary:
+      replicas: 1
+      persistence:
+        enabled: true
+        storageClass: local-path
+        size: 10Gi
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {memory: 1Gi}
+    read: {replicas: 0}
+    write: {replicas: 0}
+    backend: {replicas: 0}
+    chunksCache: {enabled: false}
+    resultsCache: {enabled: false}
+    gateway: {enabled: false}
+    lokiCanary: {enabled: false}
+    test: {enabled: false}
+    minio: {enabled: false}
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: alloy
+  namespace: kube-system
+spec:
+  repo: https://grafana.github.io/helm-charts
+  chart: alloy
+  targetNamespace: monitoring
+  valuesContent: |-
+    controller:
+      type: deployment
+      replicas: 1
+    alloy:
+      resources:
+        requests: {cpu: 50m, memory: 128Mi}
+        limits: {memory: 512Mi}
+      configMap:
+        content: |-
+          discovery.kubernetes "pods" {
+            role = "pod"
+          }
+          discovery.relabel "pods" {
+            targets = discovery.kubernetes.pods.targets
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app"]
+              target_label  = "app"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_job_name"]
+              regex         = "(.+)-[0-9]+"
+              target_label  = "cronjob"
+            }
+          }
+          loki.source.kubernetes "pods" {
+            targets    = discovery.relabel.pods.output
+            forward_to = [loki.write.default.receiver]
+          }
+          loki.write "default" {
+            endpoint {
+              url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+            }
+          }

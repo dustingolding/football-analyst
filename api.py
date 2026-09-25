@@ -70,6 +70,7 @@ def authenticate():
         raise ApiError(429, "rate_limited", f"Limit is {record['rate_per_minute']} requests per minute.")
     window.append(now)
     g.api_key_prefix = record["prefix"]
+    g.api_key_name = record["name"]
 
 
 def respond(data, max_age=300, **meta):

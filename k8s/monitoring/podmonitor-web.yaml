@@ -1,0 +1,24 @@
+# Scrape the web app's /metrics (metrics.py) in dev and prod, pod to pod (not through the proxy).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: sidelinewire-web
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [football-analyst, sidelinewire]
+  selector:
+    matchLabels: {app: web}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: env
+          regex: sidelinewire
+          replacement: prod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: env
+          regex: football-analyst
+          replacement: dev
