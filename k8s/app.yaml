@@ -18,7 +18,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: web
-          image: football-analyst-web:20260924-231729
+          image: football-analyst-web:20260924-235737
           imagePullPolicy: Never  # imported into k3s by deploy.sh; there is no registry
           ports:
             - name: http

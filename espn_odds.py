@@ -36,12 +36,17 @@ def games_to_fetch(conn, league, start, end, refresh):
         """
         SELECT g.game_id FROM games g
         WHERE g.league = %(league)s AND g.season BETWEEN %(start)s AND %(end)s
+          -- Games more than a week out get their lines from the scoreboard (no extra requests);
+          -- per-game odds are for this week's games and closing lines.
+          AND g.start_time < now() + interval '7 days'
           -- A copy fetched after kickoff holds the closing line and never needs re-fetching.
           AND (%(refresh)s OR NOT EXISTS (
               SELECT 1 FROM raw_payloads r
               WHERE r.source = %(source)s AND r.league = g.league AND r.endpoint = %(endpoint)s
                 AND r.params = jsonb_build_object('event', g.game_id)
-                AND r.fetched_at > g.start_time))
+                AND (r.fetched_at > g.start_time
+                     -- upcoming games: lines move slowly, so a copy from the last 2 hours will do
+                     OR (g.start_time > now() AND r.fetched_at > now() - interval '2 hours'))))
         ORDER BY g.start_time
         """,
         {"league": league, "start": start, "end": end, "refresh": refresh, "source": SOURCE, "endpoint": ENDPOINT},

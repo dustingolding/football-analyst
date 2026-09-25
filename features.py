@@ -20,6 +20,8 @@ import nflverse
 from database import closing_lines, connect, init_db
 from espn_client import LEAGUES
 
+# Efficiency stats come from play-by-play; the same tables also hold box scores (source 'box').
+PBP_SOURCE = {"nfl": "nflverse_pbp", "cfb": "espn_pbp"}
 EWM_HALFLIFE = 6    # games; form carries across seasons and fades
 MAX_REST_DAYS = 21  # season openers and bye-week outliers are capped here
 # Efficiency stats from team_game_stats (nflverse play-by-play) averaged into form, when present.
@@ -105,7 +107,8 @@ def team_games(games):
 
 def load_team_stats(conn, league):
     rows = conn.execute(
-        "SELECT game_id, team_id, stats FROM team_game_stats WHERE league = %s", (league,)
+        "SELECT game_id, team_id, stats FROM team_game_stats WHERE league = %s AND source = %s",
+        (league, PBP_SOURCE[league]),
     ).fetchall()
     if not rows:
         return None
@@ -227,9 +230,9 @@ def load_qb_games(conn, league):
                CASE WHEN p.team_id = g.home_team_id THEN g.away_team_id ELSE g.home_team_id END,
                g.start_time, (p.stats->>'dropbacks')::float, (p.stats->>'epa_sum')::float
         FROM player_game_stats p JOIN games g USING (league, game_id)
-        WHERE p.league = %s
+        WHERE p.league = %s AND p.source = %s
         """,
-        (league,),
+        (league, PBP_SOURCE[league]),
     ).fetchall()
     qb_games = pd.DataFrame(rows, columns=["qb", "game_id", "team", "opponent", "start_time", "dropbacks", "epa_sum"])
     qb_games["start_time"] = pd.to_datetime(qb_games["start_time"], utc=True)
