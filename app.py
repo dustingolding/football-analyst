@@ -446,7 +446,8 @@ def game(league, game_id):
     models = [(MODEL_LABELS.get(k, k), MODEL_NOTES.get(k, ""), v) for k, v in sorted(
         g["preds"].items(), key=lambda kv: list(MODEL_LABELS).index(kv[0]) if kv[0] in MODEL_LABELS else 99)]
     return render_template("game.html", league=league, league_name=LEAGUES[league], g=g, matchup=matchup,
-                           models=models, books=books, context=f, **live_panel_context(league, g))
+                           models=models, books=books, context=f, availability=web_data.game_availability(league, g),
+                           **live_panel_context(league, g))
 
 
 @app.route("/<league>/ratings")
@@ -475,23 +476,9 @@ def teams_page(league):
     return render_template("teams.html", league=league, league_name=LEAGUES[league], groups=groups, season=season)
 
 
-@app.route("/<league>/teams/<team_id>")
-def team_page(league, team_id):
-    league_or_404(league)
-    team = web_data.teams(league).get(team_id)
-    if team is None:
-        abort(404)
-    season = web_data.resolve_season(league, request.args.get("season", type=int))
-    tab = request.args.get("tab", "home")
-    if tab not in ("home", "schedule", "stats", "roster"):
-        tab = "home"
-
-    aff = web_data.affiliations(league, season).get(team_id) or {}
-    record = web_data.records(league, season).get(team_id)
-    power = web_data.power_ratings(league, season).get(team_id)
-    season_stats = web_data.team_seasons(league, season).get(team_id)
-    ap_rank = web_data.latest_ap_ranks(league, season).get(team_id) if league == "cfb" else None
-
+def team_schedule(league, season, team_id):
+    """A team's season games with predictions, from the team's side: opponent, win probability,
+    spread, and for finished games the result, score and whether it covered."""
     games = query(GAME_SQL + " WHERE g.league = %s AND g.season = %s AND (g.home_team_id = %s OR g.away_team_id = %s) "
                   "ORDER BY g.start_time", (league, season, team_id, team_id))
     attach_predictions(league, games)
@@ -513,6 +500,27 @@ def team_page(league, team_id):
             g["score"] = f"{us}-{them}"
             if g["team_spread"] is not None and us - them + g["team_spread"] != 0:
                 g["covered"] = us - them + g["team_spread"] > 0
+    return games
+
+
+@app.route("/<league>/teams/<team_id>")
+def team_page(league, team_id):
+    league_or_404(league)
+    team = web_data.teams(league).get(team_id)
+    if team is None:
+        abort(404)
+    season = web_data.resolve_season(league, request.args.get("season", type=int))
+    tab = request.args.get("tab", "home")
+    if tab not in ("home", "schedule", "stats", "roster", "offseason"):
+        tab = "home"
+
+    aff = web_data.affiliations(league, season).get(team_id) or {}
+    record = web_data.records(league, season).get(team_id)
+    power = web_data.power_ratings(league, season).get(team_id)
+    season_stats = web_data.team_seasons(league, season).get(team_id)
+    ap_rank = web_data.latest_ap_ranks(league, season).get(team_id) if league == "cfb" else None
+
+    games = team_schedule(league, season, team_id)
 
     stat_tables = web_data.team_player_stats(league, season, team_id) if tab in ("home", "stats") else {}
     upcoming = next((g for g in games if not g["completed"]), None)
@@ -528,6 +536,11 @@ def team_page(league, team_id):
         leaders=web_data.team_leaders(stat_tables) if stat_tables else [],
         roster=web_data.roster_groups(league, season, team_id) if tab == "roster" else {},
         stat_labels=web_data.STAT_LABELS, decimals=web_data.DECIMALS,
+        preseason=web_data.team_preseason(league, season, team_id),
+        transfers=(web_data.team_transfers(league, season, team_id) if league == "cfb"
+                   else web_data.nfl_moves(season, team_id)[:2]) if tab == "offseason" else ([], []),
+        draft=web_data.nfl_moves(season, team_id)[2] if tab == "offseason" and league == "nfl" else [],
+        labels=GROUP_LABELS[league],
     )
 
 
@@ -560,6 +573,50 @@ def rankings_page(league):
     tables = web_data.poll_tables(league, season, selected["season_type"], selected["week"]) if selected else []
     return render_template("rankings.html", league=league, league_name=LEAGUES[league], season=season,
                            seasons=web_data.seasons(league), weeks=weeks, selected=selected, tables=tables)
+
+
+# Contribution groups share keys across leagues; the NFL labels two of them differently.
+GROUP_LABELS = {
+    "cfb": {"history": "History", "recruiting": "Recruiting", "returning": "Returning", "transfers": "Transfers",
+            "coaching": "Coaching"},
+    "nfl": {"history": "History", "recruiting": "Draft", "returning": "Returning", "transfers": "Free agency",
+            "coaching": "Coaching"},
+}
+
+
+def preseason_sorts(league):
+    labels = GROUP_LABELS[league]
+    sorts = {"rating": "Preseason rating", "change": "Change from last season", "transfers": labels["transfers"],
+             "returning": "Returning production", "recruiting": labels["recruiting"]}
+    if league == "cfb":
+        sorts["elite"] = "Elite-season odds"
+    return sorts
+
+
+@app.route("/<league>/preseason")
+def preseason_page(league):
+    league_or_404(league)
+    seasons = web_data.preseason_seasons(league)
+    if not seasons:
+        abort(404)
+    season = request.args.get("season", seasons[0], type=int)
+    if season not in seasons:
+        season = seasons[0]
+    sorts = preseason_sorts(league)
+    sort = request.args.get("sort", "rating")
+    if sort not in sorts:
+        sort = "rating"
+    rows = list(web_data.preseason_table(league, season))
+    if sort == "change":
+        rows.sort(key=lambda r: -(r["change"] or 0))
+    elif sort == "elite":
+        rows.sort(key=lambda r: -(r["elite_prob"] or 0))
+    elif sort != "rating":
+        rows.sort(key=lambda r: -r["contributions"].get(sort, 0))
+    groups = ["history", "recruiting", "returning", "transfers", "coaching"]
+    return render_template("preseason.html", league=league, league_name=LEAGUES[league], season=season,
+                           seasons=seasons, rows=rows, sort=sort, sorts=sorts, groups=groups,
+                           labels=GROUP_LABELS[league])
 
 
 def stats_filters(league):
@@ -732,6 +789,19 @@ def ticker_time(value):
     return clock if local.date() == today else f"{local.strftime('%a')} {clock}"
 
 
+@app.errorhandler(404)
+def not_found(err):
+    """JSON errors for API paths (apps), the plain page for everything else."""
+    if request.path.startswith("/api/"):
+        return jsonify({"error": {"code": "not_found", "message": "Not found."}}), 404
+    return err
+
+
 @app.context_processor
 def inject_globals():
     return {"leagues": LEAGUES, "now": datetime.now(EASTERN), "ticker": ticker, "site_env": SITE_ENV}
+
+
+# The JSON API for apps (/api/v1); registered last because api.py imports this module.
+from api import bp as api_v1  # noqa: E402
+app.register_blueprint(api_v1)

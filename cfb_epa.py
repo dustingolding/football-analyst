@@ -9,7 +9,8 @@ ESPN doesn't publish expected points for college games, so this fits one the usu
 
 Per-team and per-QB aggregates go into team_game_stats / player_game_stats (source
 espn_pbp) with the same stat names as the NFL, so features.py treats both leagues alike.
-CFB has no player ids in the summaries, so QBs are keyed by team + passer name from the play text.
+CFB has no player ids in the summaries, so QBs are keyed by team + first initial + last name from the
+play text (the text format changed in 2025: "(12:27) Shotgun #1 C.Weigman pass ..." vs "Ty Simpson pass ...").
 
     python cfb_epa.py
 """
@@ -36,6 +37,42 @@ MODEL_PATH = Path(__file__).parent / "models" / "cfb_ep.joblib"
 # Garbage time (cfbfastR's convention): score margin beyond these by quarter.
 GARBAGE_MARGIN = {1: 999, 2: 38, 3: 28, 4: 22}
 PASSER = re.compile(r"^(.+?) (?:pass|sacked|scrambles|incomplete)", re.IGNORECASE)
+# From 2025 ESPN prefixes play text with the clock, formation and jersey:
+# "(12:27) No Huddle-Shotgun #1 C.Weigman pass complete ..."; older text starts with the name.
+PLAY_PREFIX = re.compile(r"^\(\s*\d+:\d+\s*\)\s*(?:[^#]*?#\d+\s+)?")
+JERSEY = re.compile(r"^#\d+\s+")                                             # "#10 J.Sayin pass ..."
+OLD_PREFIX = re.compile(r"^\d(?:st|nd|rd|th) and \d+, clock \d+:\d+, ", re.I)  # 2005: "1st and 10, clock 04:00, X pass"
+PASS_FROM = re.compile(r"\bpass from ([A-Z][A-Za-z.' \-]+?)(?:\s*\(|\s+for\b|,|$)")
+
+
+def passer_name(text):
+    """Passer as written in the play text ("Ty Simpson", "C.Weigman"), without clock/formation/jersey."""
+    if not isinstance(text, str):  # plays without text come through as NaN
+        return None
+    scoring = PASS_FROM.search(text)  # "Coy Eakin 32 Yd pass from Behren Morton (kick)"
+    if scoring:
+        name = scoring.group(1).strip()
+    else:
+        text = PLAY_PREFIX.sub("", text).strip()
+        text = OLD_PREFIX.sub("", JERSEY.sub("", text)).strip()
+        match = PASSER.match(text)
+        name = match.group(1).strip() if match else None
+    if not name or len(name) >= 40 or re.search(r"[\d(,]", name):
+        return None
+    return name
+
+
+def qb_key(name):
+    """Identity within a team: first initial + last name, so "Ty Simpson", "T.Simpson" and
+    "#2 T.Simpson" (the formats vary by season and game) are the same player."""
+    if not isinstance(name, str):
+        return None
+    text = re.sub(r"\b(jr|sr|ii|iii|iv)\b\.?", "", name.lower())
+    text = re.sub(r"[^a-z. ]", "", text.replace("-", " ")).strip()
+    parts = [p for p in re.split(r"[ .]+", text) if p]
+    if not parts:
+        return None
+    return f"{parts[0][0]}.{parts[-1]}" if len(parts) > 1 else parts[0]
 # Scores are read from what the play says happened, not from the score fields: before ~2014
 # ESPN attaches score changes a play late and types touchdowns as plain "Rush"/"Pass".
 TOUCHDOWN = re.compile(r"\bTD\b|touchdown", re.IGNORECASE)
@@ -209,10 +246,13 @@ def team_stats(plays):
 
 def qb_stats(plays):
     passes = plays[plays["kind"] == "pass"].copy()
-    passes["qb"] = passes["text"].fillna("").str.extract(PASSER, expand=False).str.strip()
-    passes = passes[passes["qb"].notna() & (passes["qb"].str.len() < 40)]
+    passes["name"] = passes["text"].map(passer_name)
+    passes["qb"] = passes["name"].map(qb_key)
+    passes = passes[passes["qb"].notna()]
     g = passes.groupby(["game_id", "offense", "qb"])
-    return pd.DataFrame({"dropbacks": g.size(), "epa_sum": g["epa"].sum(), "success": g["success"].mean()}).reset_index()
+    return pd.DataFrame({"dropbacks": g.size(), "epa_sum": g["epa"].sum(), "success": g["success"].mean(),
+                         # readable name: the longest form seen in the game ("Ty Simpson" over "T.Simpson")
+                         "name": g["name"].agg(lambda s: max(s, key=len))}).reset_index()
 
 
 def write(conn, team, qbs):
@@ -222,7 +262,7 @@ def write(conn, team, qbs):
         for r in team.to_dict("records")
     ]
     qb_rows = [
-        ("cfb", r["game_id"], f"{r['offense']}:{r['qb']}", r["offense"], SOURCE, r["qb"],
+        ("cfb", r["game_id"], f"{r['offense']}:{r['qb']}", r["offense"], SOURCE, r["name"],
          Jsonb({"dropbacks": float(r["dropbacks"]), "epa_sum": round(float(r["epa_sum"]), 5),
                 "success": round(float(r["success"]), 5)}))
         for r in qbs.to_dict("records")

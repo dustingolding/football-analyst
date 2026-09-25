@@ -11,6 +11,7 @@ Run after etl.py, the odds loaders and elo.py (Elo ratings are read from predict
 """
 
 import argparse
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -329,6 +330,42 @@ def preseason_context(conn, league, games):
     })
 
 
+PRESEASON_MISSING = -25.0  # teams without a preseason rating (FCS, first FBS season) are rated well below FBS
+
+
+AVAILABILITY = ["starters_out_off", "starters_out_def", "ol_out", "skill_out", "front_out", "db_out",
+                "starters_questionable", "missing_off_prod", "missing_def_prod"]
+
+
+def availability(conn, league):
+    """Per (game_id, team): injury-report availability (nflverse_availability.py), NFL only."""
+    rows = conn.execute("SELECT game_id, team_id, stats FROM team_game_stats WHERE league = %s AND source = 'availability'",
+                        (league,)).fetchall()
+    if not rows:
+        return None
+    frame = pd.DataFrame([r[2] for r in rows]).reindex(columns=AVAILABILITY).astype(float)
+    frame.insert(0, "game_id", [r[0] for r in rows])
+    frame.insert(1, "team", [r[1] for r in rows])
+    return frame
+
+
+def preseason_ratings(conn, league, games):
+    """Per (game_id, team): the team's preseason rating (offseason.py) for the game's season.
+    Seasons with no ratings stay NaN; teams missing in a rated season (CFB: FCS, first FBS
+    season) get PRESEASON_MISSING."""
+    rows = conn.execute("SELECT season, team_id, rating FROM team_preseason WHERE league = %s", (league,)).fetchall()
+    if not rows:
+        return None
+    ratings = {(s, t): r for s, t, r in rows}
+    rated_seasons = {s for s, _, _ in rows}
+    teams = pd.concat([
+        games[["game_id", "season", f"{side}_team_id"]].rename(columns={f"{side}_team_id": "team"}) for side in ("home", "away")
+    ])
+    teams["preseason_rating"] = [ratings.get((s, t), PRESEASON_MISSING) if s in rated_seasons else np.nan
+                                 for s, t in zip(teams["season"], teams["team"])]
+    return teams[["game_id", "team", "preseason_rating"]]
+
+
 def previous_starters(games, qb_games):
     """Pre-game starter guess where no source lists starters (CFB): the QB with the most
     dropbacks in the team's previous game. Returns a frame shaped like load_nflverse's
@@ -344,6 +381,56 @@ def previous_starters(games, qb_games):
     rows["qb"] = rows.groupby("team")["qb"].transform(lambda s: s.ffill().shift())
     wide = rows.pivot(index="game_id", columns="side", values="qb")
     return pd.DataFrame({"game_id": wide.index, "home_qb": wide.get("home"), "away_qb": wide.get("away")}).reset_index(drop=True)
+
+
+NEWS_OUT = {"out", "doubtful", "suspended", "season-ending"}
+NEWS_WINDOW_DAYS = 21  # a report counts for this long (season-ending: the rest of the season)
+
+
+def news_qb_overrides(conn, games, starters, qb_games):
+    """CFB: if news (cfb_news.py) says a team's presumed starting QB is out before a game, use the
+    backup: the team's QB with the most dropbacks earlier that season, else last season (no
+    history -> the QB prior). A later 'returning' / 'probable' / 'questionable' report cancels it.
+    Uses the already-learned QB-rating effect; there is no injury-news history to learn from."""
+    reports = conn.execute(
+        "SELECT team_id, player_name, status, published FROM player_status "
+        "WHERE league = 'cfb' AND source = 'news_llm' ORDER BY published").fetchall()
+    if not reports:
+        return starters, 0
+    from cfb_epa import qb_key  # QBs are keyed by first initial + last name within a team
+    by_team = defaultdict(list)
+    for team_id, name, status, published in reports:
+        by_team[team_id].append((pd.Timestamp(published), qb_key(name), status))
+    kickoff = games.set_index("game_id")["start_time"]
+    season = games.set_index("game_id")["season"]
+    teams = {"home": games.set_index("game_id")["home_team_id"], "away": games.set_index("game_id")["away_team_id"]}
+    qb = qb_games
+    changed = 0
+    starters = starters.copy()
+    for idx, row in starters.iterrows():
+        game_id = row["game_id"]
+        for side in ("home", "away"):
+            key = row[f"{side}_qb"]
+            team = teams[side].get(game_id)
+            if not isinstance(key, str) or team not in by_team:
+                continue
+            start = kickoff[game_id]
+            latest = None
+            for published, name, status in by_team[team]:
+                if published >= start or name != key.split(":", 1)[1]:
+                    continue
+                if status == "season-ending" and published.year == start.year or \
+                        (start - published).days <= NEWS_WINDOW_DAYS:
+                    latest = status
+            if latest not in NEWS_OUT:
+                continue
+            others = qb[(qb["team"] == team) & (qb["qb"] != key) & (qb["start_time"] < start)]
+            this_season = others[others["start_time"].dt.year >= season[game_id]]
+            pool = this_season if len(this_season) else others[others["start_time"].dt.year >= season[game_id] - 1]
+            backup = pool.groupby("qb")["dropbacks"].sum().idxmax() if len(pool) else None
+            starters.at[idx, f"{side}_qb"] = backup if backup is not None else f"{team}:unknown backup"
+            changed += 1
+    return starters, changed
 
 
 def qb_changed(games, nfl):
@@ -380,6 +467,10 @@ def build(conn, league):
         extra = nfl.drop(columns=["home_qb", "away_qb"])
     else:
         starters = previous_starters(games, qb_games) if len(qb_games) else None
+        if starters is not None:
+            starters, swapped = news_qb_overrides(conn, games, starters, qb_games)
+            if swapped:
+                print(f"[{league}] news: {swapped} starting-QB absences applied (backup's rating used)", flush=True)
     if len(qb_games) and starters is not None:
         rated_games = adjust_qb_games(qb_games, ridge) if ridge is not None else qb_games
         form = form.merge(qb_ratings(games, starters, rated_games, **QB_PARAMS[league]),
@@ -388,6 +479,12 @@ def build(conn, league):
     context = preseason_context(conn, league, games)
     if context is not None:
         form = form.merge(context, on=["game_id", "team"], how="left")
+    preseason = preseason_ratings(conn, league, games)
+    if preseason is not None:
+        form = form.merge(preseason, on=["game_id", "team"], how="left")
+    injuries = availability(conn, league)
+    if injuries is not None:
+        form = form.merge(injuries, on=["game_id", "team"], how="left")
 
     team_cols = [c for c in form.columns if c not in ("game_id", "team", "start_time")]
     df = games.copy()

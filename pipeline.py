@@ -30,6 +30,8 @@ def steps(stage):
         ("clean games/teams", ["etl.py"]),
         ("nflverse schedule, lines, QBs", ["nflverse.py"]),
         ("ESPN lines", ["espn_odds.py", "--league", "nfl", "cfb", *this_season]),
+        ("NFL injury reports / depth charts", ["nflverse_availability.py", *this_season]),
+        ("CFB injury news (LLM)", ["cfb_news.py"] + (["--teams"] if stage != "refresh" else [])),
     ]
     daily = [
         ("CFBD lines", ["cfbd.py", *this_season]),
@@ -39,6 +41,9 @@ def steps(stage):
         ("CFB play-by-play", ["espn_pbp.py", *this_season]),
         ("CFB EPA", ["cfb_epa.py"]),
         ("CFB box scores/rosters/polls", ["cfbd_box.py", *this_season]),
+        ("CFB transfers/recruits/coaches", ["cfbd_players.py", "--start", str(int(season) - 1)]),
+        ("preseason ratings", ["offseason.py"]),
+        ("CFB elite-season odds", ["elite.py", "--write"]),  # after offseason.py, which rewrites team_preseason
     ]
     model = [
         ("Elo", ["elo.py"]),

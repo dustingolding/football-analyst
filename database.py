@@ -221,6 +221,114 @@ CREATE TABLE IF NOT EXISTS live_plays (
     PRIMARY KEY (league, game_id, play_id)
 );
 
+-- Offseason player movement.
+CREATE TABLE IF NOT EXISTS transfers (
+    league          TEXT    NOT NULL,
+    season          INTEGER NOT NULL,     -- the season the player transfers into
+    transfer_key    TEXT    NOT NULL,     -- source-stable key (name + origin + date)
+    name            TEXT    NOT NULL,
+    position        TEXT,
+    origin_team_id  TEXT,
+    origin_name     TEXT,
+    dest_team_id    TEXT,                 -- NULL: no destination (yet)
+    dest_name       TEXT,
+    stars           INTEGER,
+    rating          DOUBLE PRECISION,     -- 247 transfer rating
+    player_id       TEXT,                 -- matched ESPN athlete id (origin roster, prior season)
+    PRIMARY KEY (league, transfer_key)
+);
+
+CREATE TABLE IF NOT EXISTS recruits (
+    league      TEXT    NOT NULL,
+    season      INTEGER NOT NULL,         -- signing class year (first season on campus)
+    recruit_id  TEXT    NOT NULL,
+    player_id   TEXT,                     -- ESPN athlete id when known
+    name        TEXT    NOT NULL,
+    position    TEXT,
+    team_id     TEXT,
+    stars       INTEGER,
+    rating      DOUBLE PRECISION,
+    ranking     INTEGER,
+    PRIMARY KEY (league, recruit_id)
+);
+
+CREATE TABLE IF NOT EXISTS head_coaches (
+    league      TEXT    NOT NULL,
+    season      INTEGER NOT NULL,
+    team_id     TEXT    NOT NULL,
+    coach       TEXT    NOT NULL,         -- coached the most games that season
+    games       INTEGER,
+    hire_date   DATE,
+    PRIMARY KEY (league, season, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS draft_picks (
+    league      TEXT    NOT NULL,
+    season      INTEGER NOT NULL,     -- draft year (the rookie's first season)
+    pick        INTEGER NOT NULL,     -- overall pick
+    round       INTEGER,
+    team_id     TEXT,
+    player_id   TEXT,                 -- gsis id
+    name        TEXT,
+    position    TEXT,
+    PRIMARY KEY (league, season, pick)
+);
+
+-- News items (headline + publisher summary + link only; no article text).
+CREATE TABLE IF NOT EXISTS news_items (
+    league          TEXT        NOT NULL,
+    article_id      TEXT        NOT NULL,
+    published       TIMESTAMPTZ,
+    headline        TEXT,
+    description     TEXT,
+    url             TEXT,
+    team_ids        TEXT[],
+    athletes        TEXT[],
+    extracted_at    TIMESTAMPTZ,              -- when the LLM read it (NULL: not yet / not injury news)
+    PRIMARY KEY (league, article_id)
+);
+
+-- Player availability reports: CFB from news (LLM-extracted), NFL from official injury reports.
+CREATE TABLE IF NOT EXISTS player_status (
+    league          TEXT        NOT NULL,
+    source          TEXT        NOT NULL,     -- 'news_llm' or 'nfl_injury_report'
+    source_id       TEXT        NOT NULL,     -- article id / game id
+    team_id         TEXT        NOT NULL,
+    player_name     TEXT        NOT NULL,
+    player_id       TEXT,
+    position        TEXT,
+    status          TEXT        NOT NULL,     -- out, doubtful, questionable, probable, returning, suspended, season-ending
+    games           INTEGER,                  -- games expected to miss, when stated
+    published       TIMESTAMPTZ,
+    headline        TEXT,
+    url             TEXT,
+    PRIMARY KEY (league, source, source_id, team_id, player_name)
+);
+
+-- Keys for the JSON API (/api/v1). Only a SHA-256 hash is stored; the key is shown once.
+CREATE TABLE IF NOT EXISTS api_keys (
+    key_hash        TEXT        PRIMARY KEY,
+    prefix          TEXT        NOT NULL,     -- first characters, to recognize a key in logs
+    name            TEXT        NOT NULL,     -- who/what it's for, e.g. "iOS app"
+    rate_per_minute INTEGER     NOT NULL DEFAULT 300,
+    active          BOOLEAN     NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Preseason team ratings from last season + offseason movement (offseason.py), fit only on
+-- earlier seasons, with the rating broken down into contribution groups.
+CREATE TABLE IF NOT EXISTS team_preseason (
+    league          TEXT    NOT NULL,
+    season          INTEGER NOT NULL,
+    team_id         TEXT    NOT NULL,
+    rating          DOUBLE PRECISION NOT NULL,   -- projected SRS, points vs an average FBS team
+    baseline        DOUBLE PRECISION,            -- last season's SRS
+    actual          DOUBLE PRECISION,            -- this season's SRS so far (NULL before games)
+    contributions   JSONB,                       -- points by group: history, recruiting, returning, ...
+    features        JSONB,
+    PRIMARY KEY (league, season, team_id)
+);
+
 -- One row per game of pre-game features (features.py); targets are NULL until the game is played.
 CREATE TABLE IF NOT EXISTS game_features (
     league        TEXT        NOT NULL,

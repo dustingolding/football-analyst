@@ -270,9 +270,11 @@ def team_seasons(league, season):
                 if mine and theirs:
                     t["box_games"] += 1
                     for k, v in mine.items():
-                        t["for"][k] += v
+                        if isinstance(v, (int, float)):  # some older box scores have blank stats
+                            t["for"][k] += v
                     for k, v in theirs.items():
-                        t["against"][k] += v
+                        if isinstance(v, (int, float)):
+                            t["against"][k] += v
                     if mine.get("third_att"):
                         t["third"][0] += mine.get("third_conv", 0)
                         t["third"][1] += mine["third_att"]
@@ -561,3 +563,153 @@ def power_ratings(league, season):
             t["rank"] = i
         return out
     return cached(("power", league, season), build)
+
+
+def preseason_table(league, season):
+    """Preseason ratings with contribution breakdowns, ranked (FBS)."""
+    def build():
+        rows = query("SELECT team_id, rating, baseline, actual, contributions, features FROM team_preseason "
+                     "WHERE league = %s AND season = %s", (league, season))
+        team_map = teams(league)
+        recs = records(league, season)
+        for r in rows:
+            r["team"] = team_map.get(r["team_id"])
+            r["record"] = (recs.get(r["team_id"]) or {}).get("overall")
+            r["change"] = r["rating"] - r["baseline"] if r["baseline"] is not None else None
+            r["n_in"] = int(r["features"].get("n_transfers_in") or 0)
+            r["n_out"] = int(r["features"].get("n_transfers_out") or 0)
+            r["elite_prob"] = r["features"].get("elite_prob")
+        rows.sort(key=lambda r: -r["rating"])
+        for i, r in enumerate(rows, 1):
+            r["rank"] = i
+        return rows
+    return cached(("preseason", league, season), build)
+
+
+def preseason_seasons(league):
+    return [r["season"] for r in query("SELECT DISTINCT season FROM team_preseason WHERE league = %s ORDER BY 1 DESC",
+                                       (league,))]
+
+
+def team_transfers(league, season, team_id):
+    """Incoming and outgoing transfers for a team's season, with what incoming players produced."""
+    rows = query(
+        """
+        SELECT t.name, t.position, t.stars, t.rating, t.origin_team_id, t.origin_name, t.dest_team_id, t.dest_name,
+               t.player_id
+        FROM transfers t WHERE t.league = %s AND t.season = %s AND (t.dest_team_id = %s OR t.origin_team_id = %s)
+        """,
+        (league, season, team_id, team_id),
+    )
+    prev = {p["player_id"]: p for p in player_seasons(league, season - 1).values()} if rows else {}
+    team_map = teams(league)
+    incoming, outgoing = [], []
+    for r in rows:
+        stats = (prev.get(r["player_id"]) or {}).get("stats") or {}
+        r["last_season"] = ", ".join(x for x in (
+            f"{stats['pass_yds']:,.0f} pass yds" if stats.get("pass_yds", 0) >= 300 else "",
+            f"{stats['rush_yds']:,.0f} rush yds" if stats.get("rush_yds", 0) >= 150 else "",
+            f"{stats['rec_yds']:,.0f} rec yds" if stats.get("rec_yds", 0) >= 150 else "",
+            f"{stats['tackles']:.0f} tkl" if stats.get("tackles", 0) >= 20 else "",
+            f"{stats.get('sacks', 0):.1f} sacks" if stats.get("sacks", 0) >= 2 else "",
+        ) if x)
+        if r["dest_team_id"] == team_id:
+            r["other"] = team_map.get(r["origin_team_id"]) or {"display_name": r["origin_name"]}
+            r["other_id"] = r["origin_team_id"]
+            incoming.append(r)
+        else:
+            r["other"] = team_map.get(r["dest_team_id"]) or ({"display_name": r["dest_name"]} if r["dest_name"] else None)
+            r["other_id"] = r["dest_team_id"]
+            outgoing.append(r)
+    key = lambda r: (-(r["rating"] or 0), r["name"])  # noqa: E731
+    return sorted(incoming, key=key), sorted(outgoing, key=key)
+
+
+def team_preseason(league, season, team_id):
+    row = next((r for r in preseason_table(league, season) if r["team_id"] == team_id), None)
+    return row
+
+
+def _stat_line(stats):
+    stats = stats or {}
+    return ", ".join(x for x in (
+        f"{stats['pass_yds']:,.0f} pass yds" if stats.get("pass_yds", 0) >= 300 else "",
+        f"{stats['rush_yds']:,.0f} rush yds" if stats.get("rush_yds", 0) >= 150 else "",
+        f"{stats['rec_yds']:,.0f} rec yds" if stats.get("rec_yds", 0) >= 150 else "",
+        f"{stats['tackles']:.0f} tkl" if stats.get("tackles", 0) >= 20 else "",
+        f"{stats.get('sacks', 0):.1f} sacks" if stats.get("sacks", 0) >= 2 else "",
+        f"{stats.get('def_int', 0):.0f} INT" if stats.get("def_int", 0) >= 2 else "",
+    ) if x)
+
+
+def nfl_moves(season, team_id):
+    """NFL offseason for one team: veterans who arrived (produced elsewhere last season), players who
+    left (produced here last season, not on this season's roster), and the draft class."""
+    last = player_seasons("nfl", season - 1)
+    roster = {r["player_id"]: r for r in rosters("nfl", season)}
+    team_map = teams("nfl")
+    arrived, departed = [], []
+    for pid, r in roster.items():
+        prev = last.get(pid)
+        if r["team_id"] == team_id and prev and prev["team_id"] != team_id:
+            line = _stat_line(prev["stats"])
+            if line:
+                arrived.append({"name": r["name"], "position": r["position"], "other_id": prev["team_id"],
+                                "other": team_map.get(prev["team_id"]), "last_season": line, "_v": _weight(prev)})
+    for pid, prev in last.items():
+        if prev["team_id"] != team_id:
+            continue
+        now = roster.get(pid)
+        if now and now["team_id"] == team_id:
+            continue
+        line = _stat_line(prev["stats"])
+        if line:
+            departed.append({"name": prev["name"], "position": prev.get("position"),
+                             "other_id": now["team_id"] if now else None,
+                             "other": team_map.get(now["team_id"]) if now else None,
+                             "last_season": line, "_v": _weight(prev)})
+    draft = query("SELECT pick, round, name, position FROM draft_picks WHERE league = 'nfl' AND season = %s "
+                  "AND team_id = %s ORDER BY pick", (season, team_id))
+    key = lambda r: -r["_v"]  # noqa: E731
+    return sorted(arrived, key=key), sorted(departed, key=key), draft
+
+
+def _weight(p):
+    """Rough production size for ordering lists (yards + 20 per tackle/sack)."""
+    s = p["stats"]
+    return (s.get("pass_yds", 0) * 0.5 + s.get("rush_yds", 0) + s.get("rec_yds", 0)
+            + 20 * (s.get("tackles", 0) + 3 * s.get("sacks", 0) + 3 * s.get("def_int", 0)))
+
+
+def game_availability(league, g):
+    """Injury report for a game, by side: NFL official report lines; CFB news-based statuses
+    (latest report per player within three weeks before kickoff, season-ending all season)."""
+    teams = {"home": g["home_team_id"], "away": g["away_team_id"]}
+    out = {"home": [], "away": []}
+    if league == "nfl":
+        rows = query("SELECT team_id, player_name, position, status, headline AS detail FROM player_status "
+                     "WHERE league = 'nfl' AND source = 'nfl_injury_report' AND source_id = %s", (g["game_id"],))
+        for r in rows:
+            side = "home" if r["team_id"] == teams["home"] else "away"
+            out[side].append(r)
+    else:
+        rows = query(
+            """
+            SELECT DISTINCT ON (team_id, lower(player_name)) team_id, player_name, position, status, games,
+                   headline, url, published
+            FROM player_status
+            WHERE league = 'cfb' AND source = 'news_llm' AND team_id = ANY(%s) AND published < %s
+              AND (published > %s - interval '21 days'
+                   OR (status = 'season-ending' AND extract(year FROM published) = extract(year FROM %s::timestamptz)))
+            ORDER BY team_id, lower(player_name), published DESC
+            """,
+            ([teams["home"], teams["away"]], g["start_time"], g["start_time"], g["start_time"]))
+        for r in rows:
+            if r["status"] in ("returning", "probable"):
+                continue  # back / expected to play
+            side = "home" if r["team_id"] == teams["home"] else "away"
+            out[side].append(r)
+    order = {"season-ending": 0, "out": 1, "suspended": 2, "doubtful": 3, "questionable": 4}
+    for side in out:
+        out[side].sort(key=lambda r: (order.get(r["status"], 9), r["player_name"]))
+    return out

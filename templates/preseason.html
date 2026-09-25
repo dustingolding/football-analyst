@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import team_link %}
+{% from "_contrib.html" import contrib %}
+{% block title %}{{ season }} preseason ratings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ season }} preseason ratings</h1>
+    <p class="muted">Last season plus the offseason: {{ 'returning production, transfer portal, recruiting and coaching changes' if league == 'cfb' else 'returning production, free agency and trades, the draft and coaching changes' }}.</p>
+  </div>
+  <form class="picker" method="get">
+    <select name="season" onchange="this.form.submit()" aria-label="Season">
+      {% for s in seasons %}<option value="{{ s }}" {{ 'selected' if s == season }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="sort" onchange="this.form.submit()" aria-label="Sort by">
+      {% for key, label in sorts.items() %}<option value="{{ key }}" {{ 'selected' if key == sort }}>{{ label }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="table-scroll"><table class="preseason-table">
+  <thead>
+    <tr>
+      <th>#</th><th>Team</th>
+      <th title="Projected points vs an average FBS team on a neutral field">Rating</th>
+      <th title="Last season's rating">Last yr</th>
+      {% if league == 'cfb' %}<th title="Chance of a top-10 season, from last two seasons, blue-chip ratio and coaching">Elite</th>{% endif %}
+      <th>Change</th>
+      {% for g in groups %}<th title="Points from {{ labels[g]|lower }}">{{ labels[g] }}</th>{% endfor %}
+      <th title="{{ 'Transfers in / out' if league == 'cfb' else 'Veterans who arrived' }}">{{ 'Portal' if league == 'cfb' else 'Arrivals' }}</th>
+      <th title="This season so far">Actual</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="muted">{{ r.rank }}</td>
+      <td class="nowrap">{{ team_link(league, r.team_id, r.team, short=True) }}</td>
+      <td><strong>{{ '%+.1f'|format(r.rating) }}</strong></td>
+      <td class="muted">{{ '%+.1f'|format(r.baseline) if r.baseline is not none else '–' }}</td>
+      {% if league == 'cfb' %}<td>{{ (r.elite_prob * 100)|round|int ~ '%' if r.elite_prob is not none else '–' }}</td>{% endif %}
+      <td>{{ contrib(r.change) if r.change is not none else '–' }}</td>
+      {% for g in groups %}<td>{{ contrib(r.contributions.get(g, 0)) }}</td>{% endfor %}
+      <td class="nowrap muted">{{ r.n_in }}{% if league == 'cfb' %} / {{ r.n_out }}{% endif %}</td>
+      <td>{{ '%+.1f'|format(r.actual) if r.actual is not none else '–' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+<p class="muted small">
+  Ratings are points better or worse than an average {{ 'FBS' if league == 'cfb' else 'NFL' }} team on a neutral field.
+  Each season's model is fit only on earlier seasons. Group columns show how many points each part adds or takes away
+  versus an average team (coaching: versus keeping the same coach).
+  {% if league == 'cfb' %}
+  History is the last two seasons and efficiency; recruiting is the four-class average and talent; transfers are incoming
+  production weighted by the old team's level plus 247 ratings in and out. On 2023–2025, preseason ratings correlate
+  0.69 with how teams actually played, versus 0.62 for last season alone.
+  <br><br><strong>Elite</strong> is the chance of a top-10 season. Studying every FBS season from 2016 to 2025, elite
+  seasons came from sustained program strength, a roster built from 4- and 5-star recruits (elite teams average 51%
+  blue-chips versus 11% for everyone else) and coaching stability; transfer-portal volume and returning production
+  didn't help predict them. On 2020–2025, each season predicted only from earlier ones, 34 of the 60 teams it rated
+  most likely were top-10 teams. Portal-built runs like Indiana's are the exception it can't see coming.
+  {% else %}
+  History is the last two seasons and efficiency; draft is the value of the team's picks; free agency is veterans' production
+  last season with other teams, weighted by those teams' level. The NFL is much harder to project than college: on 2021–2025,
+  preseason ratings correlate 0.44 with how teams actually played, versus 0.39 for last season alone.
+  {% endif %}
+</p>
+{% endblock %}
