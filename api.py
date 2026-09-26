@@ -22,6 +22,7 @@ import psycopg
 from flask import Blueprint, abort, g, jsonify, request
 
 import app as site
+import betting
 import web_data
 from database import connect
 from openapi import SPEC
@@ -698,6 +699,199 @@ def delete_activity(token):
     except psycopg.errors.UndefinedTable:
         deleted = 0
     return no_store(respond({"token": token.lower(), "deleted": bool(deleted)}))
+
+
+# --- mock betting ("Beat the Model") --------------------------------------------------------------
+
+NICKNAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{1,18}[A-Za-z0-9]$")
+RESERVED_NICKNAMES = {"sidelinewire", "model", "the model", "admin", "support"}
+
+
+def player_or_error(conn, player_id):
+    row = conn.execute("SELECT player_id, nickname, reset_at, resets FROM bet_players WHERE player_id = %s",
+                       (player_id,)).fetchone()
+    if not row:
+        raise ApiError(404, "not_found", "No such player; create one with PUT /players/<id>.")
+    return dict(zip(("player_id", "nickname", "reset_at", "resets"), row))
+
+
+def bet_item(row):
+    b = dict(zip(("id", "league", "game_id", "market", "selection", "line", "price", "stake", "model_selection",
+                  "status", "profit", "placed_at", "settled_at"), row))
+    return {"id": str(b["id"]), "league": b["league"], "game_id": b["game_id"], "market": b["market"],
+            "selection": b["selection"], "line": num(b["line"], 1), "price": b["price"], "stake": num(b["stake"], 2),
+            "model_selection": b["model_selection"], "status": b["status"], "profit": num(b["profit"], 2),
+            "model_result": betting.model_result(b["status"], b["selection"], b["model_selection"])
+            if b["status"] != "open" else None,
+            "to_win": num(betting.win_amount(b["stake"], b["price"]), 2),
+            "placed_at": iso(b["placed_at"]), "settled_at": iso(b["settled_at"])}
+
+
+BET_COLUMNS = ("id, league, game_id, market, selection, line, price, stake, model_selection, status, profit, "
+               "placed_at, settled_at")
+
+
+def player_summary(conn, player):
+    balance, available = betting.bankroll(conn, player["player_id"], player["reset_at"])
+    season = conn.execute("SELECT max(season) FROM bets WHERE player_id = %s", (player["player_id"],)).fetchone()[0]
+    rows = lambda since: conn.execute(  # noqa: E731
+        "SELECT status, stake, profit, selection, model_selection FROM bets WHERE player_id = %s "
+        "AND (%s::int IS NULL OR season = %s) AND (%s::timestamptz IS NULL OR placed_at >= %s::timestamptz)",
+        (player["player_id"], season, season, since, since)).fetchall()
+    return {"player_id": player["player_id"], "nickname": player["nickname"], "bankroll": betting.BANKROLL,
+            "balance": balance, "available": available, "resets": player["resets"],
+            "can_reset": available < betting.RESET_BELOW and balance == available,
+            "season": betting.summarize(rows(None)), "week": betting.summarize(rows(betting.week_start()))}
+
+
+@bp.put("/players/<player_id>")
+def put_player(player_id):
+    """Create a player or change its nickname."""
+    player_id = install_id_or_error(player_id)
+    nickname = str((request.get_json(silent=True) or {}).get("nickname") or "").strip()
+    if not NICKNAME.match(nickname) or nickname.lower() in RESERVED_NICKNAMES:
+        raise ApiError(400, "bad_request", "Nicknames are 3-20 letters, numbers, spaces, dots, dashes or underscores.")
+    with connect() as conn:
+        try:
+            conn.execute("INSERT INTO bet_players (player_id, nickname) VALUES (%s, %s) ON CONFLICT (player_id) "
+                         "DO UPDATE SET nickname = EXCLUDED.nickname, updated_at = now()", (player_id, nickname))
+        except psycopg.errors.UniqueViolation:
+            raise ApiError(409, "conflict", "That nickname is taken.") from None
+        return no_store(respond(player_summary(conn, player_or_error(conn, player_id))))
+
+
+@bp.get("/players/<player_id>")
+def get_player(player_id):
+    player_id = install_id_or_error(player_id)
+    with connect() as conn:
+        return no_store(respond(player_summary(conn, player_or_error(conn, player_id))))
+
+
+@bp.post("/players/<player_id>/reset")
+def reset_player(player_id):
+    """Start over at the full bankroll; only when nearly broke with nothing open. Resets are counted."""
+    player_id = install_id_or_error(player_id)
+    with connect() as conn:
+        player = player_or_error(conn, player_id)
+        if not player_summary(conn, player)["can_reset"]:
+            raise ApiError(409, "conflict", f"You can reset once you're under {betting.RESET_BELOW} units "
+                                            "with no open bets.")
+        conn.execute("UPDATE bet_players SET reset_at = now(), resets = resets + 1, updated_at = now() "
+                     "WHERE player_id = %s", (player_id,))
+        return no_store(respond(player_summary(conn, player_or_error(conn, player_id))))
+
+
+@bp.get("/players/<player_id>/bets")
+def player_bets(player_id):
+    player_id = install_id_or_error(player_id)
+    status = request.args.get("status")
+    if status not in (None, "open", "settled"):
+        raise ApiError(400, "bad_request", "status must be open or settled.")
+    where = {"open": "AND status = 'open'", "settled": "AND status <> 'open'", None: ""}[status]
+    with connect() as conn:
+        player_or_error(conn, player_id)
+        rows = conn.execute(f"SELECT {BET_COLUMNS} FROM bets WHERE player_id = %s {where} "
+                            "ORDER BY placed_at DESC LIMIT 200", (player_id,)).fetchall()
+    return no_store(respond([bet_item(r) for r in rows]))
+
+
+@bp.post("/players/<player_id>/bets")
+def place_bet(player_id):
+    """Place a bet at the current consensus price, which is locked into the bet."""
+    player_id = install_id_or_error(player_id)
+    body = request.get_json(silent=True) or {}
+    league, game_id = body.get("league"), str(body.get("game_id") or "")
+    market, selection = body.get("market"), body.get("selection")
+    league_or_error(league)
+    if market not in betting.MARKETS or selection not in betting.MARKETS[market]:
+        raise ApiError(400, "bad_request", "market is spread, moneyline or total; selection is home/away or over/under.")
+    try:
+        stake = round(float(body.get("stake")), 2)
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_request", "stake must be a number of units.") from None
+    if not betting.MIN_STAKE <= stake <= betting.MAX_STAKE:
+        raise ApiError(400, "bad_request", f"Stakes are {betting.MIN_STAKE}-{betting.MAX_STAKE} units.")
+    with connect() as conn, conn.transaction():
+        player = player_or_error(conn, player_id)
+        conn.execute("SELECT 1 FROM bet_players WHERE player_id = %s FOR UPDATE", (player_id,))  # one bet at a time
+        prices = betting.markets(conn, league, game_id)
+        if prices is None:
+            raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+        if prices["locked"]:
+            raise ApiError(409, "locked", "Betting on this game closed at kickoff.")
+        q = betting.quote(prices, market, selection)
+        if q is None:
+            raise ApiError(409, "unavailable", f"There's no {market} line for this game yet.")
+        _, available = betting.bankroll(conn, player_id, player["reset_at"])
+        if stake > available:
+            raise ApiError(409, "insufficient", f"You have {available:g} units available.")
+        game, _ = betting.game_state(conn, league, game_id)
+        try:
+            row = conn.execute(
+                f"INSERT INTO bets (player_id, league, game_id, season, market, selection, line, price, stake, "
+                f"model_selection) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {BET_COLUMNS}",
+                (player_id, league, game_id, game["season"], market, selection, q[0], q[1], stake,
+                 prices["model"][market])).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise ApiError(409, "conflict", f"You already have a {market} bet on this game.") from None
+    return no_store(respond(bet_item(row)))
+
+
+@bp.delete("/players/<player_id>/bets/<bet_id>")
+def cancel_bet(player_id, bet_id):
+    """Cancel an open bet before kickoff; the stake returns to the bankroll."""
+    player_id = install_id_or_error(player_id)
+    if not bet_id.isdigit():
+        raise ApiError(400, "bad_request", "Unknown bet.")
+    with connect() as conn:
+        row = conn.execute("SELECT league, game_id FROM bets WHERE id = %s AND player_id = %s AND status = 'open'",
+                           (int(bet_id), player_id)).fetchone()
+        if not row:
+            raise ApiError(404, "not_found", "No such open bet.")
+        if betting.game_state(conn, row[0], row[1])[1]:
+            raise ApiError(409, "locked", "Bets can't be cancelled after kickoff.")
+        conn.execute("DELETE FROM bets WHERE id = %s AND status = 'open'", (int(bet_id),))
+    return no_store(respond({"id": bet_id, "cancelled": True}))
+
+
+@bp.get("/<league>/games/<game_id>/markets")
+def game_markets(league, game_id):
+    """Prices a bet would lock in right now, the model's side of each market, and whether betting is closed."""
+    league_or_error(league)
+    with connect() as conn:
+        prices = betting.markets(conn, league, game_id)
+    if prices is None:
+        raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+    return no_store(respond(prices))
+
+
+@bp.get("/leaderboard")
+def leaderboard():
+    """Players ranked by profit this week or season (at least one graded bet), with the model's own record."""
+    period = request.args.get("period", "week")
+    if period not in ("week", "season"):
+        raise ApiError(400, "bad_request", "period must be week or season.")
+    me = request.args.get("player_id")
+    since = betting.week_start() if period == "week" else None
+    with connect() as conn:
+        season = conn.execute("SELECT max(season) FROM bets").fetchone()[0] or datetime.now(timezone.utc).year
+        rows = conn.execute(
+            """
+            SELECT p.player_id, p.nickname, count(*) FILTER (WHERE b.status = 'won'),
+                   count(*) FILTER (WHERE b.status = 'lost'), count(*) FILTER (WHERE b.status = 'push'),
+                   COALESCE(sum(b.profit), 0), COALESCE(sum(b.stake), 0)
+            FROM bets b JOIN bet_players p USING (player_id)
+            WHERE b.status <> 'open' AND b.season = %s AND (%s::timestamptz IS NULL OR b.placed_at >= %s::timestamptz)
+            GROUP BY p.player_id, p.nickname ORDER BY 6 DESC, 3 DESC
+            """, (season, since, since)).fetchall()
+        model = web_data.cached(("bet_model", period, season, since and since.isoformat()),
+                                lambda: betting.model_record(conn, season, since))
+    entries = [{"rank": i + 1, "nickname": nick, "won": w, "lost": lo, "push": pu, "profit": num(profit, 2),
+                "roi": num(float(profit) / float(staked), 4) if staked else None, "is_me": pid == me}
+               for i, (pid, nick, w, lo, pu, profit, staked) in enumerate(rows)]
+    mine = next((e for e in entries if e["is_me"]), None)
+    return no_store(respond({"period": period, "season": season, "entries": entries[:50], "me": mine,
+                             "model": model, "players": len(entries)}))
 
 
 @bp.route("/<path:unused>")

@@ -186,6 +186,7 @@ def write(method, summary, data, params=(), body=None, description=""):
     return {method: operation}
 
 
+PLAYER_ID = param("player_id", "path", {"type": "string", "format": "uuid"}, description="Random id the app keeps per player")
 INSTALL_ID = param("install_id", "path", {"type": "string", "format": "uuid"}, description="Random id the app keeps per install")
 
 
@@ -272,6 +273,29 @@ SPEC = {
             **write("delete", "Stop updating a Live Activity", obj({"token": S, "deleted": B}),
                     [param("token", "path", description="The activity's APNs push token, hex")]),
         },
+        "/players/{player_id}": {
+            **get("A mock-betting player: bankroll, week and season record, tail/fade split", {"type": "object"},
+                  [PLAYER_ID]),
+            **write("put", "Create a player or change its nickname", {"type": "object"}, [PLAYER_ID],
+                    obj({"nickname": S})),
+        },
+        "/players/{player_id}/reset": write("post", "Reset the bankroll (under 10 units, nothing open)",
+                                            {"type": "object"}, [PLAYER_ID]),
+        "/players/{player_id}/bets": {
+            **get("A player's bets, newest first", arr({"type": "object"}),
+                  [PLAYER_ID, param("status", schema={"type": "string", "enum": ["open", "settled"]})]),
+            **write("post", "Place a bet at the current consensus price (locked in)", {"type": "object"}, [PLAYER_ID],
+                    obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "game_id": S,
+                         "market": {"type": "string", "enum": ["spread", "moneyline", "total"]},
+                         "selection": {"type": "string", "enum": ["home", "away", "over", "under"]}, "stake": N})),
+        },
+        "/players/{player_id}/bets/{bet_id}": write("delete", "Cancel an open bet before kickoff", {"type": "object"},
+                                                    [PLAYER_ID, param("bet_id", "path")]),
+        "/{league}/games/{game_id}/markets": get("Prices a bet would lock in now, and the model's side of each market",
+                                                 {"type": "object"}, [LEAGUE, GAME_ID]),
+        "/leaderboard": get("Mock-betting standings by profit, with the model's own record", {"type": "object"},
+                            [param("period", schema={"type": "string", "enum": ["week", "season"]}),
+                             param("player_id", description="Mark this player's row")]),
         "/devices/{install_id}/alerts": get("An install's recent alerts, newest first", arr(obj({
             "id": S, "league": S, "game_id": NS, "kind": S, "title": NS, "body": NS, "slug": NS,
             "sent_at": {"type": "string", "format": "date-time"}})), [INSTALL_ID, param("limit", schema=I, description="1-100, default 50")]),

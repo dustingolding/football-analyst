@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from psycopg.types.json import Jsonb
 
+import betting
 from database import TEAM_STORY_SQL, connect, init_db
 from push import Apns
 
@@ -555,6 +556,9 @@ def main():
         while True:
             try:
                 run_pass(conn, apns)
+                graded = betting.settle(conn)  # mock bets on games that just went final
+                if graded:
+                    print(f"[notify] graded {graded} bet(s)", flush=True)
                 soon_pass(conn, apns)
                 activity_pass(conn, apns)
                 news_pass(conn, apns)
