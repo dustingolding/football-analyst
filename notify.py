@@ -1,6 +1,6 @@
 """Push alerts for followed teams, driven by the live scores live.py writes.
 
-Runs continuously (a Kubernetes Deployment). Every 20 s it compares each game in live_games with the
+Runs continuously (a Kubernetes Deployment); chat messages alert within ~5 s (chat.push_pass). Every 20 s it compares each game in live_games with the
 last state it saw (push_game_state) and alerts the devices following either team (push_follows):
     kickoff   pre -> in
     score     a score went up (extra points and two-point tries are folded into the next alert)
@@ -36,10 +36,12 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 import betting
+import chat
 from database import TEAM_STORY_SQL, connect, init_db
 from push import Apns
 
 EVERY = 20
+CHAT_EVERY = 5   # seconds between chat alert checks
 STALE = timedelta(minutes=15)
 PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final", "news": "alert_news",
               "upset": "alert_upset", "close": "alert_close", "soon": "alert_soon"}
@@ -552,6 +554,7 @@ def main():
             run_pass(conn, apns, dry_run=True)
             soon_pass(conn, apns, dry_run=True)
             activity_pass(conn, apns, dry_run=True)
+            chat.push_pass(conn, apns, dry_run=True)
             return news_pass(conn, apns, dry_run=True)
         while True:
             try:
@@ -568,7 +571,15 @@ def main():
                 print(f"[notify] pass failed: {type(exc).__name__}: {exc}", flush=True)
             if args.once:
                 return
-            time.sleep(EVERY)
+            # Chat alerts can't wait a whole pass: check for new messages every few seconds in between.
+            for _ in range(EVERY // CHAT_EVERY):
+                time.sleep(CHAT_EVERY)
+                try:
+                    chat.push_pass(conn, apns)
+                except psycopg.OperationalError:
+                    raise
+                except Exception as exc:
+                    print(f"[notify] chat pass failed: {type(exc).__name__}: {exc}", flush=True)
 
 
 if __name__ == "__main__":

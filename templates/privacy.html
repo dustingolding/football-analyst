@@ -11,8 +11,8 @@
   <section>
     <h2>The short version</h2>
     <ul class="facts">
-      <li>There are no accounts. We don't ask for your name, email address, location or contacts.</li>
-      <li>We keep only what alerts and lock-screen scores need to work, tied to your device, not to you.</li>
+      <li>Accounts are optional. Without one, what we keep is tied to your device, not to you. We never ask for your location or contacts.</li>
+      <li>If you sign in with Apple, we keep your account so you can chat in private groups and keep your Beat the Model bankroll on all your devices. You can delete it in the app at any time.</li>
       <li>We don't sell your data, show ads, or track you across other apps and websites.</li>
     </ul>
   </section>
@@ -27,6 +27,21 @@
       <li><strong>Live Activity tokens</strong>, if you follow a game on your Lock Screen, so we can update the score.</li>
     </ul>
     <p>We also keep a list of the alerts we've sent to your device so the app can show your recent alerts.</p>
+  </section>
+
+  <section>
+    <h2>Beat the Model (mock betting)</h2>
+    <p>Beat the Model uses play units only; no real money is involved. If you play, we keep a random player ID the app creates, the nickname you choose, and your bets and results. Your nickname, record and profit appear on the public leaderboard.</p>
+  </section>
+
+  <section>
+    <h2>Accounts (Sign in with Apple)</h2>
+    <p>Signing in is optional and only needed for chat and for keeping your bankroll across devices. When you sign in with Apple we receive a user ID Apple creates for SidelineWire, and, if you choose to share them, your name and email address (which can be an Apple private relay address). We never see your Apple password. You can change the name other members see at any time.</p>
+  </section>
+
+  <section>
+    <h2>Chat</h2>
+    <p>Chat groups are private: only people with a group's invite code can join, and only members can read its messages. We store your messages, the groups you're in, and any messages you report or people you block. Messages you report, and who reported them, are kept so we can review them and act on abuse. Deleted messages are removed from the group.</p>
   </section>
 
   <section>
@@ -55,12 +70,13 @@
 
   <section>
     <h2>How long we keep it</h2>
+    <p>Your account, bets and chat messages are kept until you delete them or your account. Deleting your account (in the app: <strong>Alerts → Account → Delete Account</strong>) permanently removes your account, your Beat the Model bankroll and bets, your messages and the groups you created, and ends Sign in with Apple for SidelineWire.</p>
     <p>Device registrations are kept while the app keeps using them. When Apple reports that a device can no longer receive notifications (for example, the app was deleted), we stop sending and mark it inactive. Alert history and server logs are kept only as long as needed to run the service.</p>
   </section>
 
   <section>
     <h2>Your choices</h2>
-    <p>You can turn any alert off in the app, turn off notifications in iOS Settings, or delete the app. To have your device's data deleted from our server, {% if support_email %}email <a href="mailto:{{ support_email }}">{{ support_email }}</a>{% else %}contact us through our <a href="{{ url_for('support') }}">support page</a>{% endif %}. Deleting the app and turning off notifications also stops all alerts, and we then mark the device inactive.</p>
+    <p>You can delete your account and its data at any time in the app under <strong>Alerts → Account</strong>. You can turn any alert off in the app, turn off notifications in iOS Settings, or delete the app. To have your device's data deleted from our server, {% if support_email %}email <a href="mailto:{{ support_email }}">{{ support_email }}</a>{% else %}contact us through our <a href="{{ url_for('support') }}">support page</a>{% endif %}. Deleting the app and turning off notifications also stops all alerts, and we then mark the device inactive.</p>
   </section>
 
   <section>
