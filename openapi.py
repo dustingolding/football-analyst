@@ -215,11 +215,13 @@ SPEC = {
     "openapi": "3.1.0",
     "info": {"title": "SidelineWire API", "version": "1.0.0",
              "description": "Read-only NFL and college football data: games with predictions and live state, teams, "
-                            "standings, rankings, ratings and leaders. Send your key in the X-API-Key header."},
+                            "standings, rankings, ratings and leaders. Send an install token in X-Install-Token (apps get one "
+                            "from POST /installs) or an API key in X-API-Key."},
     "servers": [{"url": "https://sidelinewire.com/api/v1"}, {"url": "https://dev.sidelinewire.com/api/v1"}],
-    "security": [{"apiKey": []}],
+    "security": [{"installToken": []}, {"apiKey": []}],
     "components": {"schemas": SCHEMAS,
-                   "securitySchemes": {"apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
+                   "securitySchemes": {"apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+                                       "installToken": {"type": "apiKey", "in": "header", "name": "X-Install-Token"}}},
     "paths": {
         "/status": get("Current week per league", obj({
             "site_env": S, "leagues": arr(S),
@@ -324,6 +326,10 @@ SPEC = {
             **write("put", "Block a user: hide their messages and alerts", {"type": "object"}, [param("user_id", "path")]),
             **write("delete", "Unblock a user", {"type": "object"}, [param("user_id", "path")]),
         },
+        "/installs": write("post", "Trade an API key (the app's bootstrap key) for this install's own token",
+                           obj({"token": S, "install_id": S}), [],
+                           obj({"install_id": S, "app_version": NS}),
+                           description="Send the token as X-Install-Token on every other request."),
         "/players/{player_id}": {
             **get("A mock-betting player: bankroll, week and season record, tail/fade split", {"type": "object"},
                   [PLAYER_ID]),
