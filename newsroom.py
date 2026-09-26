@@ -1132,10 +1132,26 @@ def due_recaps(conn, league, limit, game_id=None):
     if game_id:
         return game_rows(conn, "g.league = %s AND g.game_id = %s", (league, game_id))
     ranked = "" if league == "nfl" else "AND (g.home_rank IS NOT NULL OR g.away_rank IS NOT NULL)"
-    return game_rows(conn, f"""g.league = %s AND g.completed AND g.home_score IS NOT NULL
-        AND g.start_time > now() - interval '3 days' AND g.start_time < now() - interval '3 hours' {ranked}
+    # Final per the live scoreboard (live.py knows within a minute) or per the pipeline's ETL, whichever is first;
+    # the pipeline can take up to an hour to mark a game completed.
+    games = game_rows(conn, f"""g.league = %s
+        AND (g.completed OR EXISTS (SELECT 1 FROM live_games l WHERE l.league = g.league AND l.game_id = g.game_id
+                                    AND l.state = 'post' AND l.home_score IS NOT NULL))
+        AND g.start_time > now() - interval '3 days' AND g.start_time < now() - interval '2 hours' {ranked}
         AND NOT EXISTS (SELECT 1 FROM articles x WHERE x.league = g.league AND x.kind = 'recap' AND x.game_id = g.game_id)
         ORDER BY (g.home_rank IS NULL AND g.away_rank IS NULL), g.start_time LIMIT %s""", (league, limit))
+    return [with_live_final(conn, g) for g in games]
+
+
+def with_live_final(conn, g):
+    """Games the pipeline hasn't marked completed yet take their final score from the live scoreboard."""
+    if g["completed"] and g["home_score"] is not None:
+        return g
+    live_row = rows(conn, "SELECT home_score, away_score FROM live_games WHERE league = %s AND game_id = %s "
+                          "AND state = 'post'", (g["league"], g["game_id"]))
+    if live_row:
+        g = dict(g, home_score=live_row[0]["home_score"], away_score=live_row[0]["away_score"], completed=True)
+    return g
 
 
 def due_previews(conn, league, limit, game_id=None):

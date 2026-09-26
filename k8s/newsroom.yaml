@@ -1,6 +1,6 @@
 # Automated newsroom (newsroom.py): recaps, previews and Tuesday editorials written by the local LLM
 # (Ollama in the ai namespace), fact-checked, then published or queued for review at /newsroom.
-#   schedule ${NEWSROOM_SCHEDULE} (cron), suspended: ${NEWSROOM_SUSPEND}
+#   schedule ${NEWSROOM_SCHEDULE} (cron), suspended: ${NEWSROOM_SUSPEND}. Runs with nothing due finish in seconds.
 # Only one environment should write at a time: both share the one GPU.
 apiVersion: batch/v1
 kind: CronJob
