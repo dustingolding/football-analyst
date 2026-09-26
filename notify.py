@@ -6,6 +6,7 @@ last state it saw (push_game_state) and alerts the devices following either team
     score     a score went up (extra points and two-point tries are folded into the next alert)
     final     -> post
     news      a story about a followed team was published (newsroom articles, via article_teams)
+It also keeps registered Live Activities (push_activities) in step with their games' live state.
 Each alert is inserted into push_events before it's sent, so a restart or retry never repeats one.
 A game seen for the first time is recorded without alerts, so starting up mid-game or after
 downtime doesn't replay the day, and changes older than STALE are recorded but not sent.
@@ -25,6 +26,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from database import TEAM_STORY_SQL, connect, init_db
 from push import Apns
@@ -242,6 +244,76 @@ def send_test(conn, apns, install_id):
     print(f"[notify] test to {install_id}: {sent} sent, {failed} failed", flush=True)
 
 
+ACTIVITIES = """
+    SELECT a.token, a.league, a.game_id, a.environment, a.bundle_id, a.last_state, a.created_at,
+           l.state, l.detail, l.home_score, l.away_score, l.possession_team_id, l.down_distance, l.red_zone,
+           l.home_win_prob, l.last_play
+    FROM push_activities a LEFT JOIN live_games l USING (league, game_id)
+    WHERE a.ended_at IS NULL
+"""
+ACTIVITY_MAX_AGE = timedelta(hours=12)   # an activity nobody ended (game never finished for us) is dropped after this
+ACTIVITY_DISMISS = 2 * 3600              # a final stays on the lock screen this long
+
+
+def activity_state(row):
+    """The Live Activity's content state; keys match SidelineWire's GameActivityAttributes.ContentState."""
+    state = {"pre": "pre", "in": "in", "post": "final"}.get(row["state"] or "pre", "pre")
+    prob = row["home_win_prob"]
+    return {"state": state, "detail": row["detail"] or "", "homeScore": row["home_score"] or 0,
+            "awayScore": row["away_score"] or 0, "possessionTeamId": row["possession_team_id"] if state == "in" else None,
+            "downDistance": row["down_distance"] if state == "in" else None, "redZone": bool(row["red_zone"]) and state == "in",
+            "homeWinProb": None if prob is None else round(prob if prob <= 1 else prob / 100, 2),
+            "lastPlay": (row["last_play"] or "")[:140] or None}
+
+
+def activity_pass(conn, apns, dry_run=False):
+    """Keep every registered Live Activity in step with its game: push the new content state whenever it changes
+    (priority 10 for score or status changes, 5 for play-by-play), end it at the final, and drop dead tokens."""
+    cur = conn.execute(ACTIVITIES)
+    columns = [d.name for d in cur.description]
+    now = datetime.now(timezone.utc)
+    for row in (dict(zip(columns, r)) for r in cur.fetchall()):
+        if row["state"] is None and now - row["created_at"] > ACTIVITY_MAX_AGE:
+            if not dry_run:
+                conn.execute("UPDATE push_activities SET ended_at = now(), last_error = 'expired' WHERE token = %s",
+                             (row["token"],))
+            continue
+        if row["state"] is None:
+            continue  # the game isn't in the live feed yet
+        state = activity_state(row)
+        last = row["last_state"] or {}
+        if state == last:
+            continue
+        final = state["state"] == "final"
+        big = (not last or state["state"] != last.get("state") or state["homeScore"] != last.get("homeScore")
+               or state["awayScore"] != last.get("awayScore"))
+        if dry_run:
+            print(f"[notify] dry run: activity {row['league']} {row['game_id']} {row['token'][:8]}: "
+                  f"{'end' if final else 'update'} {state}", flush=True)
+            continue
+        if apns is None:
+            result_ok, reason = True, None
+        else:
+            result = apns.send_activity(row["token"], row["environment"], row["bundle_id"], state,
+                                        event="end" if final else "update", priority=10 if big else 5,
+                                        dismissal_date=now.timestamp() + ACTIVITY_DISMISS if final else None)
+            result_ok, reason = result.ok, (None if result.ok else (result.reason or str(result.status)))
+            if not result.ok and result.dead_token:
+                conn.execute("UPDATE push_activities SET ended_at = now(), last_error = %s WHERE token = %s",
+                             (reason, row["token"]))
+                print(f"[notify] activity {row['token'][:8]} gone: {reason}", flush=True)
+                continue
+        if result_ok:
+            conn.execute("UPDATE push_activities SET last_state = %s, updated_at = now(), last_error = NULL, "
+                         "ended_at = CASE WHEN %s THEN now() END WHERE token = %s",
+                         (Jsonb(state), final, row["token"]))
+            print(f"[notify] activity {row['league']} {row['game_id']} {row['token'][:8]}: "
+                  f"{'end' if final else 'update'} {state['awayScore']}-{state['homeScore']} {state['detail']}", flush=True)
+        else:
+            conn.execute("UPDATE push_activities SET last_error = %s WHERE token = %s", (reason, row["token"]))
+            print(f"[notify] activity {row['token'][:8]} failed: {reason}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Push alerts for followed teams.")
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
@@ -258,10 +330,12 @@ def main():
             return send_test(conn, apns, args.test)
         if args.dry_run:
             run_pass(conn, apns, dry_run=True)
+            activity_pass(conn, apns, dry_run=True)
             return news_pass(conn, apns, dry_run=True)
         while True:
             try:
                 run_pass(conn, apns)
+                activity_pass(conn, apns)
                 news_pass(conn, apns)
             except psycopg.OperationalError:
                 raise  # connection lost: exit so Kubernetes restarts the pod with a fresh one

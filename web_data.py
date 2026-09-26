@@ -729,6 +729,28 @@ def _label(rows):
     return rows
 
 
+TEAM_STAT_KEYS = ("total_yds", "pass_yds", "rush_yds", "first_downs", "turnovers", "pass_cmp", "pass_att", "rush_att",
+                  "third_conv", "third_att", "fourth_conv", "fourth_att", "possession_sec", "penalties", "penalty_yds",
+                  "sacks_taken")
+EFFICIENCY_SOURCE = {"nfl": "nflverse_pbp", "cfb": "espn_pbp"}
+
+
+def game_team_stats(league, game_id, home_id, away_id):
+    """{home: {...}, away: {...}}: box-score totals plus offensive EPA/play and success rate; None before any exist."""
+    rows = query("SELECT team_id, source, stats FROM team_game_stats WHERE league = %s AND game_id = %s "
+                 "AND source IN ('box', %s)", (league, game_id, EFFICIENCY_SOURCE[league]))
+    if not rows:
+        return None
+    by_team = defaultdict(dict)
+    for r in rows:
+        stats = r["stats"] or {}
+        if r["source"] == "box":
+            by_team[r["team_id"]].update({k: stats.get(k) for k in TEAM_STAT_KEYS})
+        else:
+            by_team[r["team_id"]].update(off_epa=stats.get("off_epa"), off_success=stats.get("off_success"))
+    return {"home": by_team.get(home_id, {}), "away": by_team.get(away_id, {})}
+
+
 def latest_articles(league=None, n=6, kind=None, offset=0):
     """Published articles, newest first."""
     where, params = ["status = 'published'"], []

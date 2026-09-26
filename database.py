@@ -344,11 +344,29 @@ CREATE TABLE IF NOT EXISTS push_follows (
     PRIMARY KEY (install_id, league, team_id)
 );
 CREATE INDEX IF NOT EXISTS push_follows_team_idx ON push_follows (league, team_id);
+-- Live Activities (the iOS lock-screen scoreboard): the app registers each activity's push token with
+-- PUT /api/v1/live-activities/<token>; notify.py pushes the game's live state to it and ends it at the final.
+CREATE TABLE IF NOT EXISTS push_activities (
+    token       TEXT        PRIMARY KEY,      -- the activity's APNs push token, hex
+    league      TEXT        NOT NULL,
+    game_id     TEXT        NOT NULL,
+    environment TEXT        NOT NULL,         -- sandbox or production
+    bundle_id   TEXT        NOT NULL,         -- topic is <bundle_id>.push-type.liveactivity
+    install_id  TEXT,
+    last_state  JSONB,                        -- the content state last pushed; updates go out on changes only
+    last_error  TEXT,
+    ended_at    TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS push_activities_game_idx ON push_activities (league, game_id) WHERE ended_at IS NULL;
+
 -- The API (web app, read-only web_ro role) writes registrations; notify.py's own tables stay pipeline-only.
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
         GRANT SELECT, INSERT, UPDATE, DELETE ON push_devices TO web_ro;
         GRANT SELECT, INSERT, DELETE ON push_follows TO web_ro;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON push_activities TO web_ro;
     END IF;
 END $$;
 
