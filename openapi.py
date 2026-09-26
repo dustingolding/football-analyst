@@ -336,6 +336,17 @@ SPEC = {
         },
         "/players/{player_id}/bets/{bet_id}": write("delete", "Cancel an open bet before kickoff", {"type": "object"},
                                                     [PLAYER_ID, param("bet_id", "path")]),
+        "/players/{player_id}/parlays": {
+            **get("A player's parlays with their legs, newest first", arr({"type": "object"}),
+                  [PLAYER_ID, param("status", schema={"type": "string", "enum": ["open", "settled"]})]),
+            **write("post", "Place a parlay: 2-6 legs from different games, prices locked in", {"type": "object"},
+                    [PLAYER_ID], obj({"stake": N, "legs": arr(obj({
+                        "league": {"type": "string", "enum": ["nfl", "cfb"]}, "game_id": S,
+                        "market": {"type": "string", "enum": ["spread", "moneyline", "total"]},
+                        "selection": {"type": "string", "enum": ["home", "away", "over", "under"]}}))})),
+        },
+        "/players/{player_id}/parlays/{parlay_id}": write("delete", "Cancel an open parlay before any leg kicks off",
+                                                          {"type": "object"}, [PLAYER_ID, param("parlay_id", "path")]),
         "/{league}/games/{game_id}/markets": get("Prices a bet would lock in now, and the model's side of each market",
                                                  {"type": "object"}, [LEAGUE, GAME_ID]),
         "/leaderboard": get("Mock-betting standings by profit, with the model's own record", {"type": "object"},
