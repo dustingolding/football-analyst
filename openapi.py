@@ -282,7 +282,7 @@ SPEC = {
         "/players/{player_id}/reset": write("post", "Reset the bankroll (under 10 units, nothing open)",
                                             {"type": "object"}, [PLAYER_ID]),
         "/players/{player_id}/bets": {
-            **get("A player's bets, newest first", arr({"type": "object"}),
+            **get("A player's bets with their matchups, newest first", arr({"type": "object"}),
                   [PLAYER_ID, param("status", schema={"type": "string", "enum": ["open", "settled"]})]),
             **write("post", "Place a bet at the current consensus price (locked in)", {"type": "object"}, [PLAYER_ID],
                     obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "game_id": S,
