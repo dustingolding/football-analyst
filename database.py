@@ -357,6 +357,39 @@ ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_final BOOLEAN;
 ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_news BOOLEAN;
 ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_upset BOOLEAN;
 ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_close BOOLEAN;
+-- "Starting soon": 15 minutes before a followed team's kickoff.
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_soon BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_soon BOOLEAN;
+
+-- League-wide alerts, independent of followed teams (college upsets/close games need a ranked team).
+CREATE TABLE IF NOT EXISTS push_league_alerts (
+    install_id   TEXT    NOT NULL REFERENCES push_devices (install_id) ON DELETE CASCADE,
+    league       TEXT    NOT NULL,
+    alert_upset  BOOLEAN NOT NULL DEFAULT false,
+    alert_close  BOOLEAN NOT NULL DEFAULT false,
+    alert_news   BOOLEAN NOT NULL DEFAULT false,   -- power ratings and columns
+    PRIMARY KEY (install_id, league)
+);
+
+-- Every alert each device was sent, for the app's alert history.
+CREATE TABLE IF NOT EXISTS push_deliveries (
+    id          BIGSERIAL   PRIMARY KEY,
+    install_id  TEXT        NOT NULL REFERENCES push_devices (install_id) ON DELETE CASCADE,
+    league      TEXT        NOT NULL,
+    game_id     TEXT,
+    kind        TEXT        NOT NULL,
+    title       TEXT,
+    body        TEXT,
+    slug        TEXT,                               -- the story, for news and recap alerts
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS push_deliveries_device_idx ON push_deliveries (install_id, created_at DESC);
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT, INSERT, DELETE ON push_league_alerts TO web_ro;
+        GRANT SELECT ON push_deliveries TO web_ro;
+    END IF;
+END $$;
 -- Live Activities (the iOS lock-screen scoreboard): the app registers each activity's push token with
 -- PUT /api/v1/live-activities/<token>; notify.py pushes the game's live state to it and ends it at the final.
 CREATE TABLE IF NOT EXISTS push_activities (

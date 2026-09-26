@@ -518,7 +518,8 @@ ACTIVITY_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,512}$")  # Live Activity push toke
 BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
 TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_FOLLOWS = 200
-ALERTS = ("kickoff", "scoring", "final", "news", "upset", "close")  # push_devices.alert_<name>; missing = on
+ALERTS = ("kickoff", "scoring", "final", "news", "upset", "close", "soon")
+LEAGUE_ALERTS = ("upset", "close", "news")  # push_league_alerts.alert_<name>; missing = off  # push_devices.alert_<name>; missing = on
 
 
 def install_id_or_error(install_id):
@@ -572,6 +573,11 @@ def register_device(install_id):
         if not isinstance(overrides, dict):
             raise ApiError(400, "bad_request", "A follow's alerts must be an object of booleans.")
         teams[(league, team_id)] = tuple(overrides[n] if isinstance(overrides.get(n), bool) else None for n in ALERTS)
+    league_alerts = body.get("leagues") or {}
+    if not isinstance(league_alerts, dict) or any(k not in site.LEAGUES or not isinstance(v, dict)
+                                                   for k, v in league_alerts.items()):
+        raise ApiError(400, "bad_request", "leagues must map nfl/cfb to an object of booleans.")
+    league_rows = {lg: tuple(v.get(n) is True for n in LEAGUE_ALERTS) for lg, v in league_alerts.items()}
 
     try:
         with connect() as conn, conn.transaction():
@@ -580,15 +586,16 @@ def register_device(install_id):
             conn.execute(
                 """
                 INSERT INTO push_devices (install_id, apns_token, environment, bundle_id, timezone, alert_kickoff,
-                                          alert_scoring, alert_final, alert_news, alert_upset, alert_close,
+                                          alert_scoring, alert_final, alert_news, alert_upset, alert_close, alert_soon,
                                           api_key_prefix, auto_activities, activity_start_token)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (install_id) DO UPDATE SET
                     apns_token = EXCLUDED.apns_token, environment = EXCLUDED.environment,
                     bundle_id = EXCLUDED.bundle_id, timezone = EXCLUDED.timezone,
                     alert_kickoff = EXCLUDED.alert_kickoff, alert_scoring = EXCLUDED.alert_scoring,
                     alert_final = EXCLUDED.alert_final, alert_news = EXCLUDED.alert_news,
                     alert_upset = EXCLUDED.alert_upset, alert_close = EXCLUDED.alert_close,
+                    alert_soon = EXCLUDED.alert_soon,
                     api_key_prefix = EXCLUDED.api_key_prefix, auto_activities = EXCLUDED.auto_activities,
                     activity_start_token = EXCLUDED.activity_start_token,
                     disabled_at = NULL, last_error = NULL, updated_at = now()
@@ -599,13 +606,35 @@ def register_device(install_id):
             with conn.cursor() as cur:
                 cur.executemany(
                     "INSERT INTO push_follows (install_id, league, team_id, alert_kickoff, alert_scoring, alert_final, "
-                    "alert_news, alert_upset, alert_close) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "alert_news, alert_upset, alert_close, alert_soon) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     [(install_id, league, team_id, *overrides) for (league, team_id), overrides in sorted(teams.items())])
+            conn.execute("DELETE FROM push_league_alerts WHERE install_id = %s", (install_id,))
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO push_league_alerts (install_id, league, alert_upset, alert_close, alert_news) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    [(install_id, lg, *row) for lg, row in sorted(league_rows.items()) if any(row)])
     except psycopg.errors.UndefinedTable:
         # The tables are created by the pipeline's schema setup; until that has run, say so plainly.
         raise ApiError(503, "unavailable", "Notifications aren't set up on this server yet.")
     return no_store(respond({"install_id": install_id, "follows": len(teams),
-                             "alerts": {**dict(zip(ALERTS, switches)), "live_activity": auto_activities}}))
+                             "alerts": {**dict(zip(ALERTS, switches)), "live_activity": auto_activities},
+                             "leagues": {lg: dict(zip(LEAGUE_ALERTS, row)) for lg, row in league_rows.items()}}))
+
+
+@bp.get("/devices/<install_id>/alerts")
+def device_alerts(install_id):
+    """The alerts this install was sent, newest first (the app's alert history)."""
+    install_id = install_id_or_error(install_id)
+    limit = min(max(request.args.get("limit", 50, type=int), 1), 100)
+    try:
+        rows = site.query("SELECT id, league, game_id, kind, title, body, slug, created_at FROM push_deliveries "
+                          "WHERE install_id = %s ORDER BY created_at DESC LIMIT %s", (install_id, limit))
+    except psycopg.errors.UndefinedTable:
+        rows = []
+    return no_store(respond([{"id": str(r["id"]), "league": r["league"], "game_id": r["game_id"], "kind": r["kind"],
+                              "title": r["title"], "body": r["body"], "slug": r["slug"],
+                              "sent_at": iso(r["created_at"])} for r in rows]))
 
 
 @bp.delete("/devices/<install_id>")
