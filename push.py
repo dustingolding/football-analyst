@@ -73,6 +73,8 @@ class Apns:
         if attributes_type:
             aps["attributes-type"] = attributes_type
             aps["attributes"] = attributes
+            # Ask iOS to give the new activity an update token, so the app can register it for updates.
+            aps["input-push-token"] = 1
         if alert:
             aps["alert"] = alert
         if dismissal_date:
