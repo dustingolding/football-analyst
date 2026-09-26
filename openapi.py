@@ -154,7 +154,10 @@ SCHEMAS = {
         "bundle_id": S,
         "timezone": {**NS, "description": "IANA name, e.g. America/New_York"},
         "alerts": obj({"kickoff": B, "scoring": B, "final": B,
-                       "news": {**B, "description": "Stories about a followed team (previews, recaps, power ratings)"}}, []),
+                       "news": {**B, "description": "Stories about a followed team (previews, recaps, power ratings)"},
+                       "live_activity": {**B, "description": "Auto-follow: start a Live Activity when a followed "
+                                                             "team's game is live (default off)"}}, []),
+        "activity_start_token": {**NS, "description": "ActivityKit push-to-start token, hex (needed for live_activity)"},
         "follows": arr(obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "team_id": S})),
     }, ["apns_token", "environment", "bundle_id", "follows"]),
 }
