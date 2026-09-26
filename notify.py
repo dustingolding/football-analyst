@@ -7,6 +7,10 @@ last state it saw (push_game_state) and alerts the devices following either team
     final     -> post
     upset     a pregame favorite (60%+) down to 35% or less from the second half on
     close     one-score game with two minutes or less in the 4th, or overtime
+    soon      15 minutes before kickoff (soon_pass), with the network and the model's pick
+Upsets, close games and power ratings/columns also go to devices subscribed league-wide (push_league_alerts;
+college needs a ranked team). A recap replaces the final-score alert. Every sent alert is logged in
+push_deliveries for the app's alert history.
     news      a story about a followed team was published (newsroom articles, via article_teams)
 It also keeps registered Live Activities (push_activities) in step with their games' live state, and starts
 one (push-to-start) on devices that auto-follow a team whose game is live.
@@ -37,9 +41,11 @@ from push import Apns
 EVERY = 20
 STALE = timedelta(minutes=15)
 PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final", "news": "alert_news",
-              "upset": "alert_upset", "close": "alert_close"}
+              "upset": "alert_upset", "close": "alert_close", "soon": "alert_soon"}
+LEAGUE_WIDE = {"upset", "close", "news"}   # kinds a device can also get league-wide (push_league_alerts)
+SOON = timedelta(minutes=15)
 EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "news": 12 * 3600, "upset": 20 * 60,
-           "close": 10 * 60, "test": 3600}
+           "close": 10 * 60, "soon": 15 * 60, "test": 3600}
 UPSET_FAVORITE = 0.60    # pregame win probability that makes a team the favorite for upset alerts
 UPSET_TROUBLE = 0.35     # the favorite's live win probability, from the second half on, that triggers it
 CLOSE_MARGIN = 8         # one score
@@ -52,7 +58,7 @@ NEWS_KIND = {"preview": "Preview", "recap": "Recap", "ratings": "Power Ratings",
 GAMES = """
     SELECT l.league, l.game_id, l.state, l.detail, l.home_score, l.away_score, l.last_play, l.broadcast,
            l.updated_at, l.possession_team_id, l.down_distance, l.red_zone, l.home_win_prob, l.period, l.clock,
-           g.home_team_id, g.away_team_id,
+           g.home_team_id, g.away_team_id, g.home_rank, g.away_rank,
            (SELECT p.home_win_prob FROM predictions p WHERE p.league = l.league AND p.game_id = l.game_id
               AND p.home_win_prob IS NOT NULL
             ORDER BY CASE p.model WHEN 'xgb_market' THEN 0 WHEN 'elo' THEN 2 ELSE 1 END LIMIT 1) AS pregame_prob,
@@ -165,31 +171,60 @@ def record_state(conn, game):
         (game["league"], game["game_id"], game["state"], game["home_score"], game["away_score"]))
 
 
-def recipients(conn, league, team_ids, kind):
+def recipients(conn, league, team_ids, kind, league_wide=False):
+    """Devices to alert: followers of any of team_ids with the alert on (a per-team setting beats the device's),
+    plus, when league_wide, devices subscribed to this kind for the whole league. Each device once."""
     column = PREFERENCE[kind]  # fixed names, never user input
+    league_clause = (f"OR EXISTS (SELECT 1 FROM push_league_alerts la WHERE la.install_id = d.install_id "
+                     f"AND la.league = %(league)s AND la.{column})") if league_wide and kind in LEAGUE_WIDE else ""
     return conn.execute(
         f"""
-        SELECT DISTINCT d.install_id, d.apns_token, d.environment, d.bundle_id
-        FROM push_devices d JOIN push_follows f USING (install_id)
-        WHERE f.league = %s AND f.team_id = ANY(%s) AND d.disabled_at IS NULL
-          AND COALESCE(f.{column}, d.{column})  -- a per-team setting beats the device's
+        SELECT d.install_id, d.apns_token, d.environment, d.bundle_id
+        FROM push_devices d
+        WHERE d.disabled_at IS NULL AND (
+            EXISTS (SELECT 1 FROM push_follows f WHERE f.install_id = d.install_id AND f.league = %(league)s
+                    AND f.team_id = ANY(%(teams)s) AND COALESCE(f.{column}, d.{column}))
+            {league_clause})
         """,
-        (league, list(team_ids))).fetchall()
+        {"league": league, "teams": list(team_ids)}).fetchall()
 
 
-def deliver(conn, apns, devices, league, game_id, kind, title, body, data=None, thread_id=None):
-    """Send one alert to each device; returns (sent, failed). Dead tokens are switched off."""
+def ranked(rank):
+    return rank is not None and 1 <= rank <= 25
+
+
+def league_wide_game(game, kind):
+    """Is this game big enough for league-wide subscribers? Every NFL game; in college, an upset of a ranked
+    favorite or a close game with a ranked team."""
+    if game["league"] == "nfl":
+        return True
+    if kind == "upset":
+        pre = game["pregame_prob"]
+        fav_rank = game["home_rank"] if pre is not None and (pre / 100 if pre > 1 else pre) >= 0.5 else game["away_rank"]
+        return ranked(fav_rank)
+    return ranked(game["home_rank"]) or ranked(game["away_rank"])
+
+
+def deliver(conn, apns, devices, league, game_id, kind, title, body, data=None, thread_id=None, collapse_id=None):
+    """Send one alert to each device; returns (sent, failed). Each sent alert is logged for the device's history;
+    dead tokens are switched off."""
     sent = failed = 0
+    if collapse_id is None:
+        collapse_id = {"score": f"{league}-{game_id}-score", "final": f"{league}-{game_id}-final"}.get(kind)
     for install_id, token, environment, bundle_id in devices:
         if apns is None:
             print(f"[notify] (no APNs key) would send {kind} to {install_id}: {title} | {body}", flush=True)
             continue
         result = apns.send(token, environment, bundle_id, {"title": title, "body": body},
                            data=data or {"league": league, "game_id": game_id, "kind": kind},
-                           collapse_id=f"{league}-{game_id}-score" if kind == "score" else None,
-                           thread_id=thread_id or f"{league}-{game_id}", expires_in=EXPIRES[kind])
+                           collapse_id=collapse_id, thread_id=thread_id or f"{league}-{game_id}",
+                           expires_in=EXPIRES[kind])
         if result.ok:
             sent += 1
+            conn.execute("INSERT INTO push_deliveries (install_id, league, game_id, kind, title, body, slug) "
+                         "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                         (install_id, league, None if game_id == "-" else game_id, kind, title, body,
+                          (data or {}).get("slug")))
             continue
         failed += 1
         print(f"[notify] {kind} to {install_id} failed: {result.status} {result.reason}", flush=True)
@@ -212,7 +247,8 @@ def run_pass(conn, apns, dry_run=False):
         stale = now - game["updated_at"] > STALE
         if dry_run:
             for kind, detail, title, body in events:
-                devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind)
+                devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind,
+                                     league_wide=league_wide_game(game, kind))
                 print(f"[notify] dry run: {kind} {game['league']} {game['game_id']} -> {len(devices)} device(s): "
                       f"{title} | {body}{' (stale, not sent)' if stale else ''}", flush=True)
             continue
@@ -224,7 +260,8 @@ def run_pass(conn, apns, dry_run=False):
                 (game["league"], game["game_id"], kind, detail, title, body)).fetchone()
             if not claimed or stale:
                 continue
-            devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind)
+            devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind,
+                                 league_wide=league_wide_game(game, kind))
             sent, failed = deliver(conn, apns, devices, game["league"], game["game_id"], kind, title, body)
             conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE league = %s AND game_id = %s "
                          "AND kind = %s AND detail = %s", (sent, failed, game["league"], game["game_id"], kind, detail))
@@ -309,7 +346,8 @@ def news_pass(conn, apns, dry_run=False):
     for row in cur.fetchall():
         a = dict(zip(columns, row))
         teams = [t for t in (a["alert_teams"] or []) if t]
-        if not teams:
+        league_story = a["kind"] in LEAGUE_STORY_KINDS
+        if not teams and not league_story:
             continue
         label = NEWS_KIND.get(a["kind"], "Story")
         if a["kind"] in ("preview", "recap") and len(teams) == 2:
@@ -321,7 +359,15 @@ def news_pass(conn, apns, dry_run=False):
         data = {"league": a["league"], "kind": "news", "article_kind": a["kind"], "article_id": str(a["id"]),
                 "slug": a["slug"], "url": f"{SITE}/{a['league']}/news/{a['slug']}", "team_ids": a["all_teams"],
                 "game_id": a["game_id"]}
-        devices = recipients(conn, a["league"], teams, "news")
+        devices = recipients(conn, a["league"], teams, "news", league_wide=league_story)
+        collapse_id = thread_id = None
+        # A recap replaces the game's final-score alert (same collapse id), so it reaches whoever got the final.
+        recap = recap_line(conn, names, a) if a["kind"] == "recap" and a["game_id"] else None
+        if recap:
+            title, body = recap, f"Recap: {a['headline']}"
+            collapse_id, thread_id = f"{a['league']}-{a['game_id']}-final", f"{a['league']}-{a['game_id']}"
+            seen = {d[0] for d in devices}
+            devices += [d for d in recipients(conn, a["league"], teams, "final") if d[0] not in seen]
         if dry_run:
             print(f"[notify] dry run: news {a['league']} article {a['id']} -> {len(devices)} device(s): {title} | {body}",
                   flush=True)
@@ -333,13 +379,75 @@ def news_pass(conn, apns, dry_run=False):
         if not claimed:
             continue
         sent, failed = deliver(conn, apns, devices, a["league"], a["game_id"] or "-", "news", title, body,
-                               data=data, thread_id=f"news-{a['league']}")
+                               data=data, thread_id=thread_id or f"news-{a['league']}", collapse_id=collapse_id)
         conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE kind = 'news' AND detail = %s",
                      (sent, failed, f"article-{a['id']}"))
         alerts += 1
         print(f"[notify] news {a['league']} article {a['id']}: {title} | {body} -> {sent} sent, {failed} failed",
               flush=True)
     return alerts
+
+
+LEAGUE_STORY_KINDS = {"ratings", "editorial"}   # stories league-wide news subscribers get (not every preview)
+
+
+def recap_line(conn, names, article):
+    """'Final: LOU 17 – MIA 20' for a recap's game, when its final score is in."""
+    row = conn.execute("SELECT home_team_id, away_team_id, home_score, away_score FROM games "
+                       "WHERE league = %s AND game_id = %s AND home_score IS NOT NULL", (article["league"],
+                                                                                          article["game_id"])).fetchone()
+    if not row:
+        return None
+    home, away, h, a = row
+    abbr = lambda t: names.get((article["league"], t), {"abbr": t})["abbr"]  # noqa: E731
+    return f"Final: {abbr(away)} {a} – {abbr(home)} {h}"
+
+
+SOON_GAMES = """
+    SELECT g.league, g.game_id, g.start_time, g.home_team_id, g.away_team_id, g.broadcast,
+           (SELECT p.home_win_prob FROM predictions p WHERE p.league = g.league AND p.game_id = g.game_id
+              AND p.home_win_prob IS NOT NULL
+            ORDER BY CASE p.model WHEN 'xgb_market' THEN 0 WHEN 'elo' THEN 2 ELSE 1 END LIMIT 1) AS pregame_prob
+    FROM games g LEFT JOIN live_games l USING (league, game_id)
+    WHERE NOT g.completed AND g.start_time > now() AND g.start_time <= now() + %s
+      AND COALESCE(l.state, 'pre') = 'pre'
+"""
+
+
+def soon_pass(conn, apns, dry_run=False):
+    """Starting soon: once per game, about 15 minutes before kickoff, to followers of either team."""
+    names = team_names(conn)
+    now = datetime.now(timezone.utc)
+    cur = conn.execute(SOON_GAMES, (SOON,))
+    columns = [d.name for d in cur.description]
+    for row in cur.fetchall():
+        g = dict(zip(columns, row))
+        league = g["league"]
+        home = names.get((league, g["home_team_id"]), {"short": g["home_team_id"]})
+        away = names.get((league, g["away_team_id"]), {"short": g["away_team_id"]})
+        minutes = max(1, round((g["start_time"] - now).total_seconds() / 60))
+        parts = [f"Kickoff in {minutes} min"]
+        if g["broadcast"]:
+            parts.append(g["broadcast"])
+        pre = g["pregame_prob"]
+        if pre is not None:
+            pre = pre / 100 if pre > 1 else pre
+            pick = home if pre >= 0.5 else away
+            parts.append(f"Model: {pick['short']} {round(max(pre, 1 - pre) * 100)}%")
+        title, body = f"Starting soon: {away['short']} at {home['short']}", " · ".join(parts)
+        devices = recipients(conn, league, (g["home_team_id"], g["away_team_id"]), "soon")
+        if dry_run:
+            print(f"[notify] dry run: soon {league} {g['game_id']} -> {len(devices)} device(s): {title} | {body}", flush=True)
+            continue
+        claimed = conn.execute(
+            "INSERT INTO push_events (league, game_id, kind, detail, title, body) VALUES (%s, %s, 'soon', 'soon', %s, %s) "
+            "ON CONFLICT DO NOTHING RETURNING 1", (league, g["game_id"], title, body)).fetchone()
+        if not claimed:
+            continue
+        sent, failed = deliver(conn, apns, devices, league, g["game_id"], "soon", title, body)
+        conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE league = %s AND game_id = %s AND kind = 'soon'",
+                     (sent, failed, league, g["game_id"]))
+        print(f"[notify] soon {league} {g['game_id']}: {title} | {body} -> {sent} sent, {failed} failed", flush=True)
 
 
 def send_test(conn, apns, install_id):
@@ -441,11 +549,13 @@ def main():
             return send_test(conn, apns, args.test)
         if args.dry_run:
             run_pass(conn, apns, dry_run=True)
+            soon_pass(conn, apns, dry_run=True)
             activity_pass(conn, apns, dry_run=True)
             return news_pass(conn, apns, dry_run=True)
         while True:
             try:
                 run_pass(conn, apns)
+                soon_pass(conn, apns)
                 activity_pass(conn, apns)
                 news_pass(conn, apns)
             except psycopg.OperationalError:

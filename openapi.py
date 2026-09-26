@@ -157,8 +157,11 @@ SCHEMAS = {
                        "news": {**B, "description": "Stories about a followed team (previews, recaps, power ratings)"},
                        "upset": {**B, "description": "Upset brewing: a pregame favorite in real trouble late"},
                        "close": {**B, "description": "Close game: one score, under two minutes, or overtime"},
+                       "soon": {**B, "description": "Starting soon: 15 minutes before kickoff, with the model's pick"},
                        "live_activity": {**B, "description": "Auto-follow: start a Live Activity when a followed "
                                                              "team's game is live (default off)"}}, []),
+        "leagues": {"type": "object", "description": "League-wide alerts by league (nfl, cfb), independent of follows",
+                    "additionalProperties": obj({"upset": B, "close": B, "news": B}, [])},
         "activity_start_token": {**NS, "description": "ActivityKit push-to-start token, hex (needed for live_activity)"},
         "follows": arr(obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "team_id": S,
                             "alerts": {"type": "object", "additionalProperties": B,
@@ -269,6 +272,9 @@ SPEC = {
             **write("delete", "Stop updating a Live Activity", obj({"token": S, "deleted": B}),
                     [param("token", "path", description="The activity's APNs push token, hex")]),
         },
+        "/devices/{install_id}/alerts": get("An install's recent alerts, newest first", arr(obj({
+            "id": S, "league": S, "game_id": NS, "kind": S, "title": NS, "body": NS, "slug": NS,
+            "sent_at": {"type": "string", "format": "date-time"}})), [INSTALL_ID, param("limit", schema=I, description="1-100, default 50")]),
         "/devices/{install_id}": {
             **write("put", "Register an install for push notifications",
                     obj({"install_id": S, "follows": I, "alerts": obj({"kickoff": B, "scoring": B, "final": B})}),
