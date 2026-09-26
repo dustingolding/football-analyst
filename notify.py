@@ -402,7 +402,7 @@ def news_pass(conn, apns, dry_run=False):
 
 
 BET_RESULTS = """
-SELECT b.id, b.player_id, b.league, b.game_id, b.market, b.selection, b.line, b.price, b.status, b.profit,
+SELECT b.id, b.player_id, b.league, b.game_id, b.market, b.selection, b.line, b.price, b.status, b.profit, b.prop_name,
        g.home_team_id, g.away_team_id, g.home_score, g.away_score, p.user_id, p.reset_at
 FROM bets b JOIN games g USING (league, game_id) JOIN bet_players p USING (player_id)
 WHERE NOT b.notified AND b.status <> 'open' AND b.settled_at > now() - interval '12 hours'
@@ -418,7 +418,7 @@ WHERE d.disabled_at IS NULL AND d.alert_bets AND (
     OR d.install_id IN (SELECT s.install_id FROM user_sessions s WHERE s.user_id = %(user)s))
 """
 
-RESULT_MARK = {"won": "✅", "lost": "❌", "push": "➖", "open": "⏳"}
+RESULT_MARK = {"won": "✅", "lost": "❌", "push": "➖", "void": "↩️", "open": "⏳"}
 
 PARLAY_RESULTS = """
 SELECT p.id, p.player_id, p.status, p.profit, p.odds, bp.user_id, bp.reset_at
@@ -428,13 +428,15 @@ ORDER BY p.id
 """
 
 PARLAY_LEGS = """
-SELECT l.league, l.game_id, l.market, l.selection, l.line, l.status, g.home_team_id, g.away_team_id
+SELECT l.league, l.game_id, l.market, l.selection, l.line, l.status, l.prop_name, g.home_team_id, g.away_team_id
 FROM parlay_legs l JOIN games g USING (league, game_id) WHERE l.parlay_id = %s ORDER BY g.start_time, l.id
 """
 
 
 def bet_pick(names, bet):
     """What was bet, the way the app shows it: 'TENN +5', 'Over 54.5', 'TEX ML'."""
+    if bet["market"] == "prop":
+        return f"{bet.get('prop_name') or 'Prop'} {bet['selection'].title()} {float(bet['line']):g}"
     if bet["market"] == "total":
         return f"{bet['selection'].title()} {float(bet['line']):g}"
     team = bet["home_team_id"] if bet["selection"] == "home" else bet["away_team_id"]
@@ -471,9 +473,13 @@ def bet_pass(conn, apns, dry_run=False):
         net = sum(float(b["profit"] or 0) for b in bets)
         balance, _ = betting.bankroll(conn, player_id, first["reset_at"])
         if len(bets) == 1:
-            verb = {"won": "You won", "lost": "You lost", "push": "Push"}[first["status"]]
+            verb = {"won": "You won", "lost": "You lost", "push": "Push", "void": "Bet voided"}[first["status"]]
             title = f"{RESULT_MARK[first['status']]} {verb}: {bet_pick(names, first)}"
-            body = f"Final: {score}. {units(net)} units · Balance {units(balance, sign=False)}"
+            if first["status"] == "void":
+                body = ("The score changed before your in-game bet was confirmed (or the player didn't play), so "
+                        f"your stake is back. Balance {units(balance, sign=False)}")
+            else:
+                body = f"Final: {score}. {units(net)} units · Balance {units(balance, sign=False)}"
         else:
             wins = sum(b["status"] == "won" for b in bets)
             title = f"Bets settled: {away} @ {home} ({wins}-{sum(b['status'] == 'lost' for b in bets)})"
