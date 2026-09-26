@@ -582,7 +582,20 @@ def connect():
     return psycopg.connect(database_url(), autocommit=True)
 
 
+INIT_LOCK = 727274  # pg_advisory_lock key: one process migrates at a time
+
+
 def init_db(conn):
+    # Several pods start together on a deploy; concurrent CREATE TABLE IF NOT EXISTS can collide in Postgres
+    # (duplicate pg_type), so migrations take a session lock and run one at a time.
+    conn.execute("SELECT pg_advisory_lock(%s)", (INIT_LOCK,))
+    try:
+        _migrate(conn)
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(%s)", (INIT_LOCK,))
+
+
+def _migrate(conn):
     conn.execute(SCHEMA)
     import betting  # noqa: PLC0415  (mock betting tables live with their logic)
     conn.execute(betting.SCHEMA)
