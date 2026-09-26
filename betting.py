@@ -1,11 +1,17 @@
 """Mock betting ("Beat the Model"): prices, the model's side, grading and standings.
 
-Players are anonymous ids from the app (no accounts) with a nickname for leaderboards. Each gets a
+Players are random ids from the app (linked to an account once signed in) with a nickname for leaderboards. Each gets a
 1,000-unit bankroll; bets are spread, moneyline or total, one per market per game, placed before
 kickoff at the consensus line locked when placed. Every bet records the model's side of the same
 market, so after grading a bet that tailed the model shares its result and one that faded it gets
 the opposite (pushes stay pushes). notify.py grades open bets once games are final.
+
+Parlays are one stake on 2-6 legs from different games, each leg's price locked when placed; the payout
+multiplies the legs' decimal odds (capped at +10000). A losing leg loses the parlay as soon as it's graded;
+a pushed leg drops out (its odds count as 1); all legs pushing refunds the stake.
 """
+
+import math
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -18,6 +24,8 @@ MARKETS = {"spread": ("home", "away"), "moneyline": ("home", "away"), "total": (
 # The model whose margin and total drive the spread and total picks (keep in step with app.INDEPENDENT_MODEL).
 INDEPENDENT = {"nfl": "linear", "cfb": "xgb"}
 EASTERN = ZoneInfo("America/New_York")
+MIN_LEGS, MAX_LEGS = 2, 6
+MAX_PARLAY_ODDS = 101.0       # decimal, i.e. +10000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bet_players (
@@ -52,8 +60,39 @@ CREATE INDEX IF NOT EXISTS bets_open_idx ON bets (league, game_id) WHERE status 
 CREATE INDEX IF NOT EXISTS bets_player_idx ON bets (player_id, placed_at DESC);
 -- False from grading until notify.py has sent the result alert (bets graded before this column: never).
 ALTER TABLE bets ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT true;
+CREATE TABLE IF NOT EXISTS parlays (
+    id          BIGSERIAL   PRIMARY KEY,
+    player_id   TEXT        NOT NULL REFERENCES bet_players (player_id) ON DELETE CASCADE,
+    season      INTEGER     NOT NULL,
+    stake       NUMERIC     NOT NULL,
+    odds        NUMERIC     NOT NULL,             -- decimal odds of all legs, as placed
+    status      TEXT        NOT NULL DEFAULT 'open',   -- open, won, lost, push
+    profit      NUMERIC,
+    placed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    settled_at  TIMESTAMPTZ,
+    notified    BOOLEAN     NOT NULL DEFAULT true -- false from settling until the result alert is sent
+);
+CREATE INDEX IF NOT EXISTS parlays_player_idx ON parlays (player_id, placed_at DESC);
+
+CREATE TABLE IF NOT EXISTS parlay_legs (
+    id               BIGSERIAL PRIMARY KEY,
+    parlay_id        BIGINT    NOT NULL REFERENCES parlays (id) ON DELETE CASCADE,
+    league           TEXT      NOT NULL,
+    game_id          TEXT      NOT NULL,
+    market           TEXT      NOT NULL,
+    selection        TEXT      NOT NULL,
+    line             NUMERIC,
+    price            INTEGER   NOT NULL,
+    model_selection  TEXT,
+    status           TEXT      NOT NULL DEFAULT 'open',
+    UNIQUE (parlay_id, league, game_id)            -- one leg per game
+);
+CREATE INDEX IF NOT EXISTS parlay_legs_open_idx ON parlay_legs (league, game_id) WHERE status = 'open';
+
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT, INSERT, DELETE ON parlays, parlay_legs TO web_ro;
+        GRANT USAGE ON SEQUENCE parlays_id_seq, parlay_legs_id_seq TO web_ro;
         GRANT SELECT, INSERT, UPDATE ON bet_players TO web_ro;
         GRANT SELECT, INSERT, DELETE ON bets TO web_ro;
         GRANT USAGE ON SEQUENCE bets_id_seq TO web_ro;
@@ -167,6 +206,22 @@ def win_amount(stake, price):
     return round(stake * price / 100 if price > 0 else stake * 100 / -price, 2)
 
 
+def decimal_odds(price):
+    """American odds as a decimal multiplier: -110 -> 1.909, +150 -> 2.5."""
+    return 1 + (price / 100 if price > 0 else 100 / -price)
+
+
+def american(decimal):
+    """A decimal multiplier back to American odds (for showing a parlay's price)."""
+    if decimal <= 1:
+        return 0
+    return round((decimal - 1) * 100) if decimal >= 2 else round(-100 / (decimal - 1))
+
+
+def parlay_odds(prices):
+    return math.prod(decimal_odds(p) for p in prices)
+
+
 def outcome(market, selection, line, home, away):
     """won / lost / push for a bet given the final score."""
     if market == "total":
@@ -202,7 +257,40 @@ def settle(conn):
         profit = win_amount(stake, price) if status == "won" else -float(stake) if status == "lost" else 0
         conn.execute("UPDATE bets SET status = %s, profit = %s, settled_at = now(), notified = false "
                      "WHERE id = %s AND status = 'open'", (status, profit, bet_id))
-    return len(rows)
+    return len(rows) + settle_parlays(conn)
+
+
+def settle_parlays(conn):
+    """Grade parlay legs whose games are final, then settle parlays that are decided: lost as soon as a leg
+    loses, otherwise once every leg is graded. Returns how many parlays settled."""
+    legs = conn.execute(
+        """
+        SELECT l.id, l.market, l.selection, l.line, g.home_score, g.away_score
+        FROM parlay_legs l JOIN games g USING (league, game_id)
+        LEFT JOIN live_games lg USING (league, game_id)
+        WHERE l.status = 'open' AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
+          AND (g.completed OR lg.state = 'post')
+        """).fetchall()
+    for leg_id, market, selection, line, home, away in legs:
+        conn.execute("UPDATE parlay_legs SET status = %s WHERE id = %s",
+                     (outcome(market, selection, line, home, away), leg_id))
+    settled = 0
+    for parlay_id, stake, statuses, prices in conn.execute(
+            "SELECT p.id, p.stake, array_agg(l.status), array_agg(l.price) FROM parlays p "
+            "JOIN parlay_legs l ON l.parlay_id = p.id WHERE p.status = 'open' GROUP BY p.id").fetchall():
+        if "lost" in statuses:
+            status, profit = "lost", -float(stake)
+        elif "open" in statuses:
+            continue
+        elif all(s == "push" for s in statuses):
+            status, profit = "push", 0
+        else:
+            won = [price for s, price in zip(statuses, prices) if s == "won"]
+            status, profit = "won", round(float(stake) * parlay_odds(won) - float(stake), 2)
+        conn.execute("UPDATE parlays SET status = %s, profit = %s, settled_at = now(), notified = false "
+                     "WHERE id = %s AND status = 'open'", (status, profit, parlay_id))
+        settled += 1
+    return settled
 
 
 # --- standings -----------------------------------------------------------------------------------
@@ -234,12 +322,15 @@ def summarize(bets):
 
 
 def bankroll(conn, player_id, reset_at):
-    """(balance, available): units after graded bets since the last reset, and that minus open stakes."""
+    """(balance, available): units after graded bets and parlays since the last reset, and that minus open
+    stakes."""
     graded, open_stakes = conn.execute(
         "SELECT COALESCE(sum(profit) FILTER (WHERE status <> 'open'), 0), "
-        "COALESCE(sum(stake) FILTER (WHERE status = 'open'), 0) FROM bets "
-        "WHERE player_id = %s AND (%s::timestamptz IS NULL OR placed_at > %s::timestamptz)",
-        (player_id, reset_at, reset_at)).fetchone()
+        "COALESCE(sum(stake) FILTER (WHERE status = 'open'), 0) FROM ("
+        "  SELECT status, stake, profit, placed_at FROM bets WHERE player_id = %(p)s"
+        "  UNION ALL SELECT status, stake, profit, placed_at FROM parlays WHERE player_id = %(p)s) t "
+        "WHERE %(r)s::timestamptz IS NULL OR placed_at > %(r)s::timestamptz",
+        {"p": player_id, "r": reset_at}).fetchone()
     balance = round(BANKROLL + float(graded), 2)
     return balance, round(balance - float(open_stakes), 2)
 

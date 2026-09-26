@@ -1050,11 +1050,15 @@ BET_GAME_KEYS = ("start_time", "completed", "home_team_id", "away_team_id", "hom
 
 def player_summary(conn, player):
     balance, available = betting.bankroll(conn, player["player_id"], player["reset_at"])
-    season = conn.execute("SELECT max(season) FROM bets WHERE player_id = %s", (player["player_id"],)).fetchone()[0]
+    season = conn.execute("SELECT max(season) FROM (SELECT season FROM bets WHERE player_id = %(p)s UNION ALL "
+                          "SELECT season FROM parlays WHERE player_id = %(p)s) t", {"p": player["player_id"]}).fetchone()[0]
+    # Parlays count toward the record and profit, not the with/against-the-model split.
     rows = lambda since: conn.execute(  # noqa: E731
-        "SELECT status, stake, profit, selection, model_selection FROM bets WHERE player_id = %s "
-        "AND (%s::int IS NULL OR season = %s) AND (%s::timestamptz IS NULL OR placed_at >= %s::timestamptz)",
-        (player["player_id"], season, season, since, since)).fetchall()
+        "SELECT status, stake, profit, selection, model_selection FROM ("
+        "  SELECT status, stake, profit, selection, model_selection, season, placed_at FROM bets WHERE player_id = %(p)s"
+        "  UNION ALL SELECT status, stake, profit, NULL, NULL, season, placed_at FROM parlays WHERE player_id = %(p)s) t "
+        "WHERE (%(s)s::int IS NULL OR season = %(s)s) AND (%(since)s::timestamptz IS NULL OR placed_at >= %(since)s::timestamptz)",
+        {"p": player["player_id"], "s": season, "since": since}).fetchall()
     return {"player_id": player["player_id"], "nickname": player["nickname"], "bankroll": betting.BANKROLL,
             "balance": balance, "available": available, "resets": player["resets"],
             "can_reset": available < betting.RESET_BELOW and balance == available,
@@ -1175,6 +1179,124 @@ def cancel_bet(player_id, bet_id):
     return no_store(respond({"id": bet_id, "cancelled": True}))
 
 
+PARLAY_COLUMNS = "id, stake, odds, status, profit, placed_at, settled_at"
+LEG_COLUMNS = ("l.parlay_id, l.league, l.game_id, l.market, l.selection, l.line, l.price, l.model_selection, l.status, "
+               "g.start_time, g.completed, g.home_team_id, g.away_team_id, g.home_score, g.away_score")
+
+
+def parlay_items(conn, rows):
+    """Parlays with their legs (and each leg's matchup), in the order given."""
+    parlays = [dict(zip(("id", "stake", "odds", "status", "profit", "placed_at", "settled_at"), r)) for r in rows]
+    legs = {}
+    if parlays:
+        for r in conn.execute(f"SELECT {LEG_COLUMNS} FROM parlay_legs l JOIN games g USING (league, game_id) "
+                              "WHERE l.parlay_id = ANY(%s) ORDER BY g.start_time, l.id", ([p["id"] for p in parlays],)):
+            leg = dict(zip(("parlay_id", "league", "game_id", "market", "selection", "line", "price", "model_selection",
+                            "status", *BET_GAME_KEYS), r))
+            legs.setdefault(leg["parlay_id"], []).append({
+                "league": leg["league"], "game_id": leg["game_id"],
+                "game": bet_game(leg["league"], {k: leg[k] for k in BET_GAME_KEYS}),
+                "market": leg["market"], "selection": leg["selection"], "line": num(leg["line"], 1),
+                "price": leg["price"], "model_selection": leg["model_selection"], "status": leg["status"]})
+    out = []
+    for p in parlays:
+        odds = float(p["odds"])
+        out.append({"id": str(p["id"]), "stake": num(p["stake"], 2), "odds": num(odds, 4), "price": betting.american(odds),
+                    "to_win": num(float(p["stake"]) * odds - float(p["stake"]), 2), "status": p["status"],
+                    "profit": num(p["profit"], 2), "placed_at": iso(p["placed_at"]), "settled_at": iso(p["settled_at"]),
+                    "legs": legs.get(p["id"], [])})
+    return out
+
+
+@bp.get("/players/<player_id>/parlays")
+def player_parlays(player_id):
+    player_id = install_id_or_error(player_id)
+    status = request.args.get("status")
+    if status not in (None, "open", "settled"):
+        raise ApiError(400, "bad_request", "status must be open or settled.")
+    where = {"open": "AND status = 'open'", "settled": "AND status <> 'open'", None: ""}[status]
+    with connect() as conn:
+        player_or_error(conn, player_id)
+        rows = conn.execute(f"SELECT {PARLAY_COLUMNS} FROM parlays WHERE player_id = %s {where} "
+                            "ORDER BY placed_at DESC LIMIT 100", (player_id,)).fetchall()
+        return no_store(respond(parlay_items(conn, rows)))
+
+
+@bp.post("/players/<player_id>/parlays")
+def place_parlay(player_id):
+    """One stake on 2-6 legs from different games, each at its current consensus price (locked in)."""
+    player_id = install_id_or_error(player_id)
+    body = request.get_json(silent=True) or {}
+    legs = body.get("legs")
+    if not isinstance(legs, list) or not betting.MIN_LEGS <= len(legs) <= betting.MAX_LEGS:
+        raise ApiError(400, "bad_request", f"A parlay has {betting.MIN_LEGS}-{betting.MAX_LEGS} legs.")
+    try:
+        stake = round(float(body.get("stake")), 2)
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_request", "stake must be a number of units.") from None
+    if not betting.MIN_STAKE <= stake <= betting.MAX_STAKE:
+        raise ApiError(400, "bad_request", f"Stakes are {betting.MIN_STAKE}-{betting.MAX_STAKE} units.")
+    games = set()
+    for leg in legs:
+        leg = leg if isinstance(leg, dict) else {}
+        league_or_error(leg.get("league"))
+        if leg.get("market") not in betting.MARKETS or leg.get("selection") not in betting.MARKETS[leg["market"]]:
+            raise ApiError(400, "bad_request", "Each leg needs a market (spread, moneyline, total) and a selection.")
+        key = (leg["league"], str(leg.get("game_id") or ""))
+        if key in games:
+            raise ApiError(400, "bad_request", "A parlay can have only one leg per game.")
+        games.add(key)
+    with connect() as conn, conn.transaction():
+        player = player_or_error(conn, player_id)
+        conn.execute("SELECT 1 FROM bet_players WHERE player_id = %s FOR UPDATE", (player_id,))
+        placed, season = [], None
+        for leg in legs:
+            league, game_id = leg["league"], str(leg["game_id"])
+            prices = betting.markets(conn, league, game_id)
+            if prices is None:
+                raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+            game, locked = betting.game_state(conn, league, game_id)
+            matchup = f"{team_ref(league, game['away_team_id'])['abbreviation']} @ {team_ref(league, game['home_team_id'])['abbreviation']}"
+            if locked:
+                raise ApiError(409, "locked", f"Betting on {matchup} closed at kickoff. Remove that leg.")
+            q = betting.quote(prices, leg["market"], leg["selection"])
+            if q is None:
+                raise ApiError(409, "unavailable", f"There's no {leg['market']} line for {matchup} right now.")
+            placed.append((league, game_id, leg["market"], leg["selection"], q[0], q[1], prices["model"][leg["market"]]))
+            season = max(season or 0, game["season"])
+        odds = betting.parlay_odds([p[5] for p in placed])
+        if odds > betting.MAX_PARLAY_ODDS:
+            raise ApiError(409, "too_long", f"Parlay odds are capped at +{betting.american(betting.MAX_PARLAY_ODDS)}.")
+        _, available = betting.bankroll(conn, player_id, player["reset_at"])
+        if stake > available:
+            raise ApiError(409, "insufficient", f"You have {available:g} units available.")
+        row = conn.execute(f"INSERT INTO parlays (player_id, season, stake, odds) VALUES (%s, %s, %s, %s) "
+                           f"RETURNING {PARLAY_COLUMNS}", (player_id, season, stake, odds)).fetchone()
+        with conn.cursor() as cur:
+            cur.executemany("INSERT INTO parlay_legs (parlay_id, league, game_id, market, selection, line, price, "
+                            "model_selection) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                            [(row[0], *p) for p in placed])
+        return no_store(respond(parlay_items(conn, [row])[0]))
+
+
+@bp.delete("/players/<player_id>/parlays/<parlay_id>")
+def cancel_parlay(player_id, parlay_id):
+    """Cancel an open parlay while none of its games has kicked off; the stake returns to the bankroll."""
+    player_id = install_id_or_error(player_id)
+    if not parlay_id.isdigit():
+        raise ApiError(400, "bad_request", "Unknown parlay.")
+    with connect() as conn:
+        legs = conn.execute("SELECT l.league, l.game_id FROM parlays p JOIN parlay_legs l ON l.parlay_id = p.id "
+                            "WHERE p.id = %s AND p.player_id = %s AND p.status = 'open'",
+                            (int(parlay_id), player_id)).fetchall()
+        if not legs:
+            raise ApiError(404, "not_found", "No such open parlay.")
+        if any(betting.game_state(conn, league, game_id)[1] for league, game_id in legs):
+            raise ApiError(409, "locked", "Parlays can't be cancelled once one of their games has kicked off.")
+        conn.execute("DELETE FROM parlays WHERE id = %s AND status = 'open'", (int(parlay_id),))
+    return no_store(respond({"id": parlay_id, "cancelled": True}))
+
+
 @bp.get("/<league>/games/<game_id>/markets")
 def game_markets(league, game_id):
     """Prices a bet would lock in right now, the model's side of each market, and whether betting is closed."""
@@ -1188,7 +1310,7 @@ def game_markets(league, game_id):
 
 @bp.get("/leaderboard")
 def leaderboard():
-    """Players ranked by profit this week or season (at least one graded bet), with the model's own record."""
+    """Players ranked by profit (bets and parlays) this week or season, with the model's own record."""
     period = request.args.get("period", "week")
     if period not in ("week", "season"):
         raise ApiError(400, "bad_request", "period must be week or season.")
@@ -1201,7 +1323,9 @@ def leaderboard():
             SELECT p.player_id, p.nickname, count(*) FILTER (WHERE b.status = 'won'),
                    count(*) FILTER (WHERE b.status = 'lost'), count(*) FILTER (WHERE b.status = 'push'),
                    COALESCE(sum(b.profit), 0), COALESCE(sum(b.stake), 0)
-            FROM bets b JOIN bet_players p USING (player_id)
+            FROM (SELECT player_id, status, profit, stake, season, placed_at FROM bets
+                  UNION ALL SELECT player_id, status, profit, stake, season, placed_at FROM parlays) b
+            JOIN bet_players p USING (player_id)
             WHERE b.status <> 'open' AND b.season = %s AND (%s::timestamptz IS NULL OR b.placed_at >= %s::timestamptz)
             GROUP BY p.player_id, p.nickname ORDER BY 6 DESC, 3 DESC
             """, (season, since, since)).fetchall()

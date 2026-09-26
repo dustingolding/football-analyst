@@ -408,7 +408,19 @@ WHERE d.disabled_at IS NULL AND d.alert_bets AND (
     OR d.install_id IN (SELECT s.install_id FROM user_sessions s WHERE s.user_id = %(user)s))
 """
 
-RESULT_MARK = {"won": "✅", "lost": "❌", "push": "➖"}
+RESULT_MARK = {"won": "✅", "lost": "❌", "push": "➖", "open": "⏳"}
+
+PARLAY_RESULTS = """
+SELECT p.id, p.player_id, p.status, p.profit, p.odds, bp.user_id, bp.reset_at
+FROM parlays p JOIN bet_players bp USING (player_id)
+WHERE NOT p.notified AND p.status <> 'open' AND p.settled_at > now() - interval '12 hours'
+ORDER BY p.id
+"""
+
+PARLAY_LEGS = """
+SELECT l.league, l.game_id, l.market, l.selection, l.line, l.status, g.home_team_id, g.away_team_id
+FROM parlay_legs l JOIN games g USING (league, game_id) WHERE l.parlay_id = %s ORDER BY g.start_time, l.id
+"""
 
 
 def bet_pick(names, bet):
@@ -470,7 +482,43 @@ def bet_pass(conn, apns, dry_run=False):
               flush=True)
     if not dry_run:
         conn.execute("UPDATE bets SET notified = true WHERE NOT notified AND settled_at <= now() - interval '12 hours'")
-    return len(groups)
+    return len(groups) + parlay_pass(conn, apns, names, dry_run)
+
+
+def parlay_pass(conn, apns, names, dry_run=False):
+    """One alert per settled parlay: hit, lost (as soon as a leg loses) or pushed, with every leg's mark."""
+    cur = conn.execute(PARLAY_RESULTS)
+    columns = [d.name for d in cur.description]
+    parlays = [dict(zip(columns, r)) for r in cur.fetchall()]
+    if parlays and not names:
+        names = team_names(conn)
+    for p in parlays:
+        cur = conn.execute(PARLAY_LEGS, (p["id"],))
+        legs = [dict(zip([d.name for d in cur.description], r)) for r in cur.fetchall()]
+        price = betting.american(float(p["odds"]))
+        if p["status"] == "won":
+            title = f"✅ Parlay hit! {len(legs)} legs at {price:+d}"
+        elif p["status"] == "lost":
+            missed = next((bet_pick(names, leg) for leg in legs if leg["status"] == "lost"), "a leg")
+            title = f"❌ Parlay lost: {missed} missed"
+        else:
+            title = f"➖ Parlay pushed ({len(legs)} legs)"
+        balance, _ = betting.bankroll(conn, p["player_id"], p["reset_at"])
+        picks = " · ".join(f"{RESULT_MARK[leg['status']]} {bet_pick(names, leg)}" for leg in legs)
+        body = f"{picks}. {units(p['profit'] or 0)} units · Balance {units(balance, sign=False)}"
+        devices = conn.execute(BET_DEVICES, {"player": p["player_id"], "user": p["user_id"]}).fetchall()
+        if dry_run:
+            print(f"[notify] dry run: parlay {p['id']} -> {len(devices)} device(s): {title} | {body}", flush=True)
+            continue
+        league = legs[0]["league"] if legs else "nfl"
+        sent, failed = deliver(conn, apns, devices, league, "-", "bet", title, body,
+                               data={"kind": "parlay", "parlay_id": str(p["id"])}, thread_id="bets",
+                               collapse_id=f"parlay-{p['id']}")
+        conn.execute("UPDATE parlays SET notified = true WHERE id = %s", (p["id"],))
+        print(f"[notify] parlay {p['id']}: {title} -> {sent} sent, {failed} failed", flush=True)
+    if not dry_run:
+        conn.execute("UPDATE parlays SET notified = true WHERE NOT notified AND settled_at <= now() - interval '12 hours'")
+    return len(parlays)
 
 
 LEAGUE_STORY_KINDS = {"ratings", "editorial"}   # stories league-wide news subscribers get (not every preview)
