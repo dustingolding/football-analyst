@@ -640,6 +640,8 @@ def _migrate(conn):
     conn.execute(accounts.SCHEMA)
     import chat  # noqa: PLC0415  (after accounts: groups belong to users)
     conn.execute(chat.SCHEMA)
+    import monetization  # noqa: PLC0415  (after betting: bonus units belong to players)
+    conn.execute(monetization.SCHEMA)
 
 
 def normalize_params(params):
