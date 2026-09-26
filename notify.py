@@ -48,7 +48,7 @@ PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "al
 LEAGUE_WIDE = {"upset", "close", "news"}   # kinds a device can also get league-wide (push_league_alerts)
 SOON = timedelta(minutes=15)
 EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "news": 12 * 3600, "upset": 20 * 60,
-           "close": 10 * 60, "soon": 15 * 60, "test": 3600}
+           "close": 10 * 60, "soon": 15 * 60, "test": 3600, "bet": 12 * 3600}
 UPSET_FAVORITE = 0.60    # pregame win probability that makes a team the favorite for upset alerts
 UPSET_TROUBLE = 0.35     # the favorite's live win probability, from the second half on, that triggers it
 CLOSE_MARGIN = 8         # one score
@@ -391,6 +391,88 @@ def news_pass(conn, apns, dry_run=False):
     return alerts
 
 
+BET_RESULTS = """
+SELECT b.id, b.player_id, b.league, b.game_id, b.market, b.selection, b.line, b.price, b.status, b.profit,
+       g.home_team_id, g.away_team_id, g.home_score, g.away_score, p.user_id, p.reset_at
+FROM bets b JOIN games g USING (league, game_id) JOIN bet_players p USING (player_id)
+WHERE NOT b.notified AND b.status <> 'open' AND b.settled_at > now() - interval '12 hours'
+ORDER BY b.player_id, b.league, b.game_id, b.id
+"""
+
+# The player's devices: installs that registered this player, plus (when signed in) the account's installs.
+BET_DEVICES = """
+SELECT DISTINCT d.install_id, d.apns_token, d.environment, d.bundle_id
+FROM push_devices d
+WHERE d.disabled_at IS NULL AND d.alert_bets AND (
+    d.bet_player_id = %(player)s
+    OR d.install_id IN (SELECT s.install_id FROM user_sessions s WHERE s.user_id = %(user)s))
+"""
+
+RESULT_MARK = {"won": "✅", "lost": "❌", "push": "➖"}
+
+
+def bet_pick(names, bet):
+    """What was bet, the way the app shows it: 'TENN +5', 'Over 54.5', 'TEX ML'."""
+    if bet["market"] == "total":
+        return f"{bet['selection'].title()} {float(bet['line']):g}"
+    team = bet["home_team_id"] if bet["selection"] == "home" else bet["away_team_id"]
+    abbr = names.get((bet["league"], team), {"abbr": team})["abbr"]
+    if bet["market"] == "moneyline":
+        return f"{abbr} ML"
+    line = float(bet["line"])
+    return f"{abbr} {'PK' if line == 0 else f'{line:+g}'}"
+
+
+def units(value, sign=True):
+    """86.96 -> '+86.96', 100.0 -> '+100', 0 -> '±0' (unsigned for balances)."""
+    if sign and not float(value):
+        return "±0"
+    text = f"{float(value):{'+' if sign else ''},.2f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def bet_pass(conn, apns, dry_run=False):
+    """One alert per player per game once its bets are graded: each pick's result, the net and the new balance.
+    Tap opens the game. Grades older than 12 hours (e.g. while the notifier was down) are marked without alerting."""
+    cur = conn.execute(BET_RESULTS)
+    columns = [d.name for d in cur.description]
+    groups = {}
+    for row in cur.fetchall():
+        bet = dict(zip(columns, row))
+        groups.setdefault((bet["player_id"], bet["league"], bet["game_id"]), []).append(bet)
+    names = team_names(conn) if groups else {}
+    for (player_id, league, game_id), bets in groups.items():
+        first = bets[0]
+        away = names.get((league, first["away_team_id"]), {"abbr": first["away_team_id"]})["abbr"]
+        home = names.get((league, first["home_team_id"]), {"abbr": first["home_team_id"]})["abbr"]
+        score = f"{away} {first['away_score']}, {home} {first['home_score']}"
+        net = sum(float(b["profit"] or 0) for b in bets)
+        balance, _ = betting.bankroll(conn, player_id, first["reset_at"])
+        if len(bets) == 1:
+            verb = {"won": "You won", "lost": "You lost", "push": "Push"}[first["status"]]
+            title = f"{RESULT_MARK[first['status']]} {verb}: {bet_pick(names, first)}"
+            body = f"Final: {score}. {units(net)} units · Balance {units(balance, sign=False)}"
+        else:
+            wins = sum(b["status"] == "won" for b in bets)
+            title = f"Bets settled: {away} @ {home} ({wins}-{sum(b['status'] == 'lost' for b in bets)})"
+            picks = " · ".join(f"{RESULT_MARK[b['status']]} {bet_pick(names, b)}" for b in bets)
+            body = f"Final: {score}. {picks}. Net {units(net)} units · Balance {units(balance, sign=False)}"
+        devices = conn.execute(BET_DEVICES, {"player": player_id, "user": first["user_id"]}).fetchall()
+        if dry_run:
+            print(f"[notify] dry run: bets {player_id[:8]} {league} {game_id} -> {len(devices)} device(s): {title} | {body}",
+                  flush=True)
+            continue
+        sent, failed = deliver(conn, apns, devices, league, game_id, "bet", title, body,
+                               data={"league": league, "game_id": game_id, "kind": "bet"}, thread_id="bets",
+                               collapse_id=f"bet-{player_id[:8]}-{league}-{game_id}")
+        conn.execute("UPDATE bets SET notified = true WHERE id = ANY(%s)", ([b["id"] for b in bets],))
+        print(f"[notify] bet results {player_id[:8]} {league} {game_id}: {title} -> {sent} sent, {failed} failed",
+              flush=True)
+    if not dry_run:
+        conn.execute("UPDATE bets SET notified = true WHERE NOT notified AND settled_at <= now() - interval '12 hours'")
+    return len(groups)
+
+
 LEAGUE_STORY_KINDS = {"ratings", "editorial"}   # stories league-wide news subscribers get (not every preview)
 
 
@@ -555,6 +637,7 @@ def main():
             soon_pass(conn, apns, dry_run=True)
             activity_pass(conn, apns, dry_run=True)
             chat.push_pass(conn, apns, dry_run=True)
+            bet_pass(conn, apns, dry_run=True)
             return news_pass(conn, apns, dry_run=True)
         while True:
             try:
@@ -562,6 +645,7 @@ def main():
                 graded = betting.settle(conn)  # mock bets on games that just went final
                 if graded:
                     print(f"[notify] graded {graded} bet(s)", flush=True)
+                bet_pass(conn, apns)
                 soon_pass(conn, apns)
                 activity_pass(conn, apns)
                 news_pass(conn, apns)

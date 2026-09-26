@@ -159,7 +159,10 @@ SCHEMAS = {
                        "close": {**B, "description": "Close game: one score, under two minutes, or overtime"},
                        "soon": {**B, "description": "Starting soon: 15 minutes before kickoff, with the model's pick"},
                        "live_activity": {**B, "description": "Auto-follow: start a Live Activity when a followed "
-                                                             "team's game is live (default off)"}}, []),
+                                                             "team's game is live (default off)"},
+                       "bets": {**B, "description": "Beat the Model results when this install's bets are graded"}},
+                      []),
+        "bet_player_id": {**NS, "description": "This install's mock-betting player (for result alerts)"},
         "leagues": {"type": "object", "description": "League-wide alerts by league (nfl, cfb), independent of follows",
                     "additionalProperties": obj({"upset": B, "close": B, "news": B}, [])},
         "activity_start_token": {**NS, "description": "ActivityKit push-to-start token, hex (needed for live_activity)"},
