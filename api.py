@@ -58,8 +58,8 @@ def api_error(err):
     return response
 
 
-def active_keys():
-    if time.time() - _keys_cache["at"] > 60:
+def active_keys(max_age=60):
+    if time.time() - _keys_cache["at"] > max_age:
         _keys_cache["keys"] = {r["key_hash"]: r for r in site.query(
             "SELECT key_hash, prefix, name, rate_per_minute, scope FROM api_keys WHERE active")}
         _keys_cache["at"] = time.time()
@@ -107,7 +107,11 @@ def authenticate():
         g.api_key_prefix, g.api_key_name, g.install_id = "install", "install token", record["install_id"]
         return
     key = request.headers.get("X-API-Key") or ""
-    record = active_keys().get(hashlib.sha256(key.encode()).hexdigest()) if key else None
+    key_hash = hashlib.sha256(key.encode()).hexdigest()
+    record = active_keys().get(key_hash) if key else None
+    if record is None and key:
+        # A key created in the last minute: re-read the list (at most every 5 s) rather than wait for the refresh.
+        record = active_keys(max_age=5).get(key_hash)
     if record is None:
         raise ApiError(401, "unauthorized", "Missing or invalid X-API-Key header.")
     if record["scope"] == "bootstrap" and request.endpoint not in BOOTSTRAP_ENDPOINTS:
