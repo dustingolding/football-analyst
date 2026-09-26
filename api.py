@@ -1,7 +1,7 @@
 """JSON API for apps (the iOS app): /api/v1/...
 
-Read-only apart from device registration for push notifications (PUT/DELETE /devices/<id>),
-versioned, and built on the same queries as the website. Conventions:
+Read-only apart from device registration for push notifications (PUT/DELETE /devices/<id>), mock betting
+and accounts (Sign in with Apple; signed-in calls add "Authorization: Bearer <session token>"), versioned, and built on the same queries as the website. Conventions:
     - responses are {"data": ..., "meta": {...}}; errors are {"error": {"code": ..., "message": ...}}
     - ids are strings, times are ISO 8601 UTC, keys are snake_case, probabilities are 0-1
     - requests carry an API key in the X-API-Key header (create one with api_keys.py);
@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from flask import Blueprint, abort, g, jsonify, request
 
+import accounts
 import app as site
 import betting
 import web_data
@@ -707,6 +708,87 @@ def delete_activity(token):
     except psycopg.errors.UndefinedTable:
         deleted = 0
     return no_store(respond({"token": token.lower(), "deleted": bool(deleted)}))
+
+
+# --- accounts (Sign in with Apple) ---------------------------------------------------------------
+
+def bearer_token():
+    auth = request.headers.get("Authorization") or ""
+    return auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+
+
+def current_user(conn):
+    """The signed-in user's id; 401 signed_out when the session is missing or gone."""
+    user_id = accounts.session_user(conn, bearer_token())
+    if not user_id:
+        raise ApiError(401, "signed_out", "Sign in to do that.")
+    return user_id
+
+
+def user_item(user):
+    return {"user_id": user["user_id"], "display_name": user["display_name"], "email": user["email"],
+            "created_at": iso(user["created_at"])}
+
+
+def optional_uuid(value):
+    value = str(value or "")
+    return value.lower() if INSTALL_ID.match(value) else None
+
+
+@bp.post("/auth/apple")
+def auth_apple():
+    """Exchange a Sign in with Apple identity token for a session. Links this device's betting player."""
+    body = request.get_json(silent=True) or {}
+    identity_token = str(body.get("identity_token") or "")
+    if not identity_token:
+        raise ApiError(400, "bad_request", "identity_token is required.")
+    try:
+        claims = accounts.verify_identity_token(identity_token)
+    except accounts.AuthError as err:
+        raise ApiError(401, "invalid_sign_in", str(err)) from None
+    with connect() as conn, conn.transaction():
+        token, user = accounts.sign_in(conn, claims, full_name=body.get("full_name"),
+                                       authorization_code=body.get("authorization_code"),
+                                       install_id=optional_uuid(body.get("install_id")))
+        player_id = accounts.link_player(conn, user["user_id"], optional_uuid(body.get("player_id")))
+    return no_store(respond({"token": token, "user": user_item(user), "player_id": player_id}))
+
+
+@bp.get("/me")
+def get_me():
+    with connect() as conn:
+        user_id = current_user(conn)
+        player = conn.execute("SELECT player_id FROM bet_players WHERE user_id = %s", (user_id,)).fetchone()
+        return no_store(respond({"user": user_item(accounts.user(conn, user_id)),
+                                 "player_id": player[0] if player else None}))
+
+
+@bp.put("/me")
+def put_me():
+    """Change the display name shown in chat."""
+    name = accounts.clean_display_name((request.get_json(silent=True) or {}).get("display_name"))
+    if not name or len(name) < 2:
+        raise ApiError(400, "bad_request", f"Names are 2-{accounts.DISPLAY_NAME_MAX} characters.")
+    with connect() as conn:
+        user_id = current_user(conn)
+        conn.execute("UPDATE users SET display_name = %s, updated_at = now() WHERE user_id = %s", (name, user_id))
+        return no_store(respond({"user": user_item(accounts.user(conn, user_id))}))
+
+
+@bp.post("/auth/signout")
+def sign_out():
+    with connect() as conn:
+        conn.execute("DELETE FROM user_sessions WHERE token_hash = %s", (accounts.hash_token(bearer_token()),))
+    return no_store(respond({"signed_out": True}))
+
+
+@bp.delete("/me")
+def delete_me():
+    """Delete the account and everything tied to it (betting player, chat); revokes Sign in with Apple."""
+    with connect() as conn:
+        user_id = current_user(conn)
+        accounts.delete_user(conn, user_id)
+    return no_store(respond({"deleted": True}))
 
 
 # --- mock betting ("Beat the Model") --------------------------------------------------------------
