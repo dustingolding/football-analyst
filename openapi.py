@@ -76,7 +76,18 @@ SCHEMAS = {
                                 "away_moneyline": NI, "opening_home_spread": NN})),
         "injuries": obj({side: arr(ref("Injury")) for side in ("home", "away")}),
         "box_score": nullable(ref("BoxScore")),
+        "team_stats": nullable(obj({side: ref("TeamGameStats") for side in ("home", "away")})),
+        "stories": arr(ref("Article")),
     })]},
+    "TeamGameStats": {"type": "object", "description": "Box-score totals plus offensive EPA per play and success "
+                                                       "rate; any stat can be missing or null",
+                      "properties": {k: NN for k in ("total_yds", "pass_yds", "rush_yds", "first_downs", "turnovers",
+                                                     "pass_cmp", "pass_att", "rush_att", "third_conv", "third_att",
+                                                     "fourth_conv", "fourth_att", "possession_sec", "penalties",
+                                                     "penalty_yds", "sacks_taken", "off_epa", "off_success")}},
+    "ActivityRegistration": obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "game_id": S,
+                                 "environment": {"type": "string", "enum": ["sandbox", "production"]},
+                                 "bundle_id": S, "install_id": NS}, ["league", "game_id", "environment", "bundle_id"]),
     "BoxScoreSide": obj({"players": arr(obj({"id": S, "name": NS, "stats": arr(S)})), "totals": nullable(arr(S))}),
     "BoxScore": obj({"final": B, "categories": arr(obj({
         "name": {"type": "string", "description": "passing, rushing, receiving, defensive, interceptions, fumbles, "
@@ -239,6 +250,17 @@ SPEC = {
                                          [LEAGUE, param("slug", "path")]),
         "/models": get("Model performance on test seasons", {"type": "object", "additionalProperties": obj({
             "games": I, "test_first_season": I, "models": arr(ref("ModelMetrics"))})}),
+        "/live-activities/{token}": {
+            **write("put", "Register a Live Activity's push token for a game",
+                    obj({"token": S, "league": S, "game_id": S}),
+                    [param("token", "path", description="The activity's APNs push token, hex")],
+                    ref("ActivityRegistration"),
+                    description="The server pushes the game's live state to the activity (content state keys: state, "
+                                "detail, homeScore, awayScore, possessionTeamId, downDistance, redZone, homeWinProb, "
+                                "lastPlay) and ends it at the final."),
+            **write("delete", "Stop updating a Live Activity", obj({"token": S, "deleted": B}),
+                    [param("token", "path", description="The activity's APNs push token, hex")]),
+        },
         "/devices/{install_id}": {
             **write("put", "Register an install for push notifications",
                     obj({"install_id": S, "follows": I, "alerts": obj({"kickoff": B, "scoring": B, "final": B})}),

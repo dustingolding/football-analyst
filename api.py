@@ -214,6 +214,12 @@ def game(league, game_id):
                                 "games": r.get("games"), "detail": r.get("detail") or r.get("headline"),
                                 "url": r.get("url")} for r in availability[side]] for side in ("home", "away")}
     data["box_score"] = box_score(league, g)
+    stats = web_data.game_team_stats(league, game_id, g["home_team_id"], g["away_team_id"])
+    data["team_stats"] = stats and {side: {k: num(v, 4) for k, v in stats[side].items()} for side in ("home", "away")}
+    articles = web_data.game_articles(league, game_id)  # {kind: article}
+    stories = [articles[k] for k in ("preview", "recap") if k in articles]
+    tags = web_data.article_team_tags([a["id"] for a in stories])
+    data["stories"] = [article_item(a, tags=tags.get(a["id"], [])) for a in stories]
     return respond(data, max_age=30 if g["state"] == "in" else 300)
 
 
@@ -508,6 +514,7 @@ def article(league, slug):
 
 INSTALL_ID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 APNS_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,200}$")
+ACTIVITY_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,512}$")  # Live Activity push tokens are longer (128 bytes today)
 BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
 TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_FOLLOWS = 200
@@ -597,6 +604,57 @@ def delete_device(install_id):
     except psycopg.errors.UndefinedTable:
         deleted = 0
     return no_store(respond({"install_id": install_id, "deleted": bool(deleted)}))
+
+
+# --- Live Activities -----------------------------------------------------------------------------
+
+@bp.put("/live-activities/<token>")
+def register_activity(token):
+    """Register a Live Activity's push token for one game; notify.py keeps it updated until the final."""
+    if not ACTIVITY_TOKEN.match(token):
+        raise ApiError(400, "bad_request", "The activity token must be hex.")
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ApiError(400, "bad_request", "Send a JSON object.")
+    league, game_id = body.get("league"), str(body.get("game_id") or "")
+    if league not in site.LEAGUES or not TEAM_ID.match(game_id):
+        raise ApiError(400, "bad_request", "league (nfl or cfb) and game_id are required.")
+    environment = body.get("environment")
+    if environment not in ("sandbox", "production"):
+        raise ApiError(400, "bad_request", "environment must be sandbox or production.")
+    bundle_id = str(body.get("bundle_id") or "")
+    if not BUNDLE_ID.match(bundle_id):
+        raise ApiError(400, "bad_request", "bundle_id is required.")
+    install_id = body.get("install_id")
+    install_id = install_id.lower() if isinstance(install_id, str) and INSTALL_ID.match(install_id) else None
+    if not games_by(league, "g.game_id = %s", (game_id,)):
+        raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO push_activities (token, league, game_id, environment, bundle_id, install_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (token) DO UPDATE SET league = EXCLUDED.league, game_id = EXCLUDED.game_id,
+                    environment = EXCLUDED.environment, bundle_id = EXCLUDED.bundle_id,
+                    install_id = EXCLUDED.install_id, ended_at = NULL, last_error = NULL, updated_at = now()
+                """, (token.lower(), league, game_id, environment, bundle_id, install_id))
+    except psycopg.errors.UndefinedTable:
+        raise ApiError(503, "unavailable", "Live Activities aren't set up on this server yet.")
+    return no_store(respond({"token": token.lower(), "league": league, "game_id": game_id}))
+
+
+@bp.delete("/live-activities/<token>")
+def delete_activity(token):
+    """The user ended the activity; stop pushing to it."""
+    if not ACTIVITY_TOKEN.match(token):
+        raise ApiError(400, "bad_request", "The activity token must be hex.")
+    try:
+        with connect() as conn:
+            deleted = conn.execute("DELETE FROM push_activities WHERE token = %s", (token.lower(),)).rowcount
+    except psycopg.errors.UndefinedTable:
+        deleted = 0
+    return no_store(respond({"token": token.lower(), "deleted": bool(deleted)}))
 
 
 @bp.route("/<path:unused>")
