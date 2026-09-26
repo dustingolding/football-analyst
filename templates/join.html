@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Join a SidelineWire group{% endblock %}
+{% block content %}
+<article class="explainer">
+  <header class="explainer-head">
+    <p class="kicker">Chat</p>
+    <h1>You're invited to a SidelineWire group</h1>
+    <p class="dek">Private group chat for talking games with friends, in the SidelineWire iPhone app.</p>
+  </header>
+
+  <section>
+    <h2>Invite code</h2>
+    <p style="font-size: 2rem; font-weight: 800; letter-spacing: 0.15em;">{{ code }}</p>
+    <p><a class="button" href="sidelinewire://join/{{ code }}">Open in SidelineWire</a></p>
+  </section>
+
+  <section>
+    <h2>How to join</h2>
+    <ol>
+      <li>Open SidelineWire on your iPhone and sign in with Apple (<strong>Alerts → Account</strong>).</li>
+      <li>Open <strong>Chat</strong>, tap <strong>Join a Group</strong>, and enter the code above.</li>
+    </ol>
+  </section>
+</article>
+{% endblock %}

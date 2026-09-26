@@ -11,6 +11,7 @@ import functools
 import hashlib
 import math
 import os
+import re
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -793,6 +794,15 @@ def models():
 def support():
     """Help and contact for the website and the iOS app (the App Store listing's Support URL)."""
     return render_template("support.html", support_email=SUPPORT_EMAIL)
+
+
+@app.route("/join/<code>")
+def join_group_page(code):
+    """Where chat invite links land: the code and how to use it in the app."""
+    code = re.sub(r"[^A-Za-z0-9]", "", code).upper()[:12]
+    if not code:
+        abort(404)
+    return render_template("join.html", code=code)
 
 
 @app.route("/privacy")

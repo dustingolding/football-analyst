@@ -1,7 +1,7 @@
 """JSON API for apps (the iOS app): /api/v1/...
 
-Read-only apart from device registration for push notifications (PUT/DELETE /devices/<id>), mock betting
-and accounts (Sign in with Apple; signed-in calls add "Authorization: Bearer <session token>"), versioned, and built on the same queries as the website. Conventions:
+Read-only apart from device registration for push notifications (PUT/DELETE /devices/<id>), mock betting,
+chat and accounts (Sign in with Apple; signed-in calls add "Authorization: Bearer <session token>"), versioned, and built on the same queries as the website. Conventions:
     - responses are {"data": ..., "meta": {...}}; errors are {"error": {"code": ..., "message": ...}}
     - ids are strings, times are ISO 8601 UTC, keys are snake_case, probabilities are 0-1
     - requests carry an API key in the X-API-Key header (create one with api_keys.py);
@@ -24,11 +24,13 @@ from flask import Blueprint, abort, g, jsonify, request
 import accounts
 import app as site
 import betting
+import chat
 import web_data
 from database import connect
 from openapi import SPEC
 
 bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+SITE_URL = "https://sidelinewire.com" if site.SITE_ENV == "prod" else "https://dev.sidelinewire.com"  # invite links
 REQUIRE_KEY = os.getenv("API_REQUIRE_KEY", "1") != "0"
 _keys_cache = {"at": 0.0, "keys": {}}
 _hits = defaultdict(deque)  # key hash -> request times in the last minute (per worker)
@@ -789,6 +791,216 @@ def delete_me():
         user_id = current_user(conn)
         accounts.delete_user(conn, user_id)
     return no_store(respond({"deleted": True}))
+
+
+# --- chat (private groups) -------------------------------------------------------------------------
+
+@bp.errorhandler(chat.ChatError)
+def chat_error(err):
+    return api_error(ApiError(err.status, err.code, err.message))
+
+
+def group_id_or_404(group_id):
+    group_id = optional_uuid(group_id)
+    if not group_id:
+        raise ApiError(404, "not_found", "No such group.")
+    return group_id
+
+
+def int_or_404(value, what="message"):
+    if not str(value).isdigit():
+        raise ApiError(404, "not_found", f"No such {what}.")
+    return int(value)
+
+
+def group_item(g, me):
+    last = None
+    if g["last_id"] is not None:
+        last = {"id": str(g["last_id"]), "body": g["last_body"], "display_name": g["last_name"],
+                "is_me": g["last_user_id"] == me, "created_at": iso(g["last_at"])}
+    return {"group_id": g["group_id"], "name": g["name"], "is_owner": g["owner_id"] == me,
+            "invite_code": g["invite_code"], "invite_url": f"{SITE_URL}/join/{g['invite_code']}",
+            "muted": g["muted"], "members": g["members"], "unread": g["unread"], "last_message": last,
+            "created_at": iso(g["created_at"])}
+
+
+def one_group(conn, group_id, me):
+    group = next((g for g in chat.groups_for(conn, me) if g["group_id"] == group_id), None)
+    if group is None:
+        raise ApiError(404, "not_found", "No such group.")
+    return group_item(group, me)
+
+
+def shared_games(conn, messages):
+    """Matchups for games shared in these messages, keyed by (league, game_id)."""
+    out = {}
+    for league, game_id in {(m["league"], m["game_id"]) for m in messages if m["game_id"]}:
+        game, _ = betting.game_state(conn, league, game_id)
+        if game:
+            state = ("final" if game["completed"] or game["live_state"] == "post"
+                     else "in" if game["live_state"] == "in" else "pre")
+            out[(league, game_id)] = {"league": league, "id": game_id, "state": state, **bet_game(league, game)}
+    return out
+
+
+def message_item(m, me, games):
+    deleted = m["deleted_at"] is not None
+    return {"id": str(m["id"]), "user_id": m["user_id"], "display_name": m["display_name"], "is_me": m["user_id"] == me,
+            "body": "" if deleted else m["body"], "deleted": deleted, "created_at": iso(m["created_at"]),
+            "game": None if deleted else games.get((m["league"], m["game_id"]))}
+
+
+@bp.get("/groups")
+def list_groups():
+    with connect() as conn:
+        me = current_user(conn)
+        return no_store(respond([group_item(g, me) for g in chat.groups_for(conn, me)]))
+
+
+@bp.post("/groups")
+def create_group():
+    body = request.get_json(silent=True) or {}
+    with connect() as conn, conn.transaction():
+        me = current_user(conn)
+        group_id = chat.create_group(conn, me, body.get("name"))
+        return no_store(respond(one_group(conn, group_id, me)))
+
+
+@bp.post("/groups/join")
+def join_group():
+    body = request.get_json(silent=True) or {}
+    with connect() as conn, conn.transaction():
+        me = current_user(conn)
+        group_id = chat.join_group(conn, me, body.get("code"))
+        return no_store(respond(one_group(conn, group_id, me)))
+
+
+@bp.get("/groups/<group_id>")
+def get_group(group_id):
+    group_id = group_id_or_404(group_id)
+    with connect() as conn:
+        me = current_user(conn)
+        group = one_group(conn, group_id, me)
+        members = [{"user_id": m["user_id"], "display_name": m["display_name"], "is_me": m["user_id"] == me,
+                    "is_owner": group["is_owner"] and m["user_id"] == me or None, "blocked": m["blocked"],
+                    "joined_at": iso(m["joined_at"])} for m in chat.members_of(conn, group_id, me)]
+        owner = conn.execute("SELECT owner_id FROM chat_groups WHERE group_id = %s", (group_id,)).fetchone()[0]
+        for m in members:
+            m["is_owner"] = m["user_id"] == owner
+        return no_store(respond({"group": group, "members": members}))
+
+
+@bp.put("/groups/<group_id>")
+def update_group(group_id):
+    """The owner renames the group; any member can mute it or mark it read (muted, last_read_id)."""
+    group_id = group_id_or_404(group_id)
+    body = request.get_json(silent=True) or {}
+    with connect() as conn, conn.transaction():
+        me = current_user(conn)
+        if "name" in body:
+            chat.require_owner(conn, group_id, me)
+            conn.execute("UPDATE chat_groups SET name = %s, updated_at = now() WHERE group_id = %s",
+                         (chat.clean_name(body["name"]), group_id))
+        if "muted" in body:
+            chat.set_muted(conn, group_id, me, body["muted"])
+        if "last_read_id" in body:
+            chat.mark_read(conn, group_id, me, int_or_404(body["last_read_id"]))
+        return no_store(respond(one_group(conn, group_id, me)))
+
+
+@bp.delete("/groups/<group_id>")
+def delete_group(group_id):
+    group_id = group_id_or_404(group_id)
+    with connect() as conn:
+        me = current_user(conn)
+        chat.require_owner(conn, group_id, me)
+        conn.execute("DELETE FROM chat_groups WHERE group_id = %s", (group_id,))
+    return no_store(respond({"group_id": group_id, "deleted": True}))
+
+
+@bp.post("/groups/<group_id>/invite")
+def rotate_invite(group_id):
+    """New invite code (the old one stops working)."""
+    group_id = group_id_or_404(group_id)
+    with connect() as conn, conn.transaction():
+        me = current_user(conn)
+        chat.rotate_code(conn, group_id, me)
+        return no_store(respond(one_group(conn, group_id, me)))
+
+
+@bp.delete("/groups/<group_id>/members/<member_id>")
+def remove_member(group_id, member_id):
+    """Leave the group (your own id) or, as its creator, remove a member."""
+    group_id = group_id_or_404(group_id)
+    member_id = optional_uuid(member_id) or ""
+    with connect() as conn, conn.transaction():
+        me = current_user(conn)
+        chat.remove_member(conn, group_id, me, member_id)
+    return no_store(respond({"group_id": group_id, "removed": member_id}))
+
+
+@bp.get("/groups/<group_id>/messages")
+def group_messages(group_id):
+    """Oldest first. ?after=<id> for new messages (polling), ?before=<id> for older ones, neither for the latest."""
+    group_id = group_id_or_404(group_id)
+    after, before = request.args.get("after"), request.args.get("before")
+    after = int_or_404(after) if after else None
+    before = int_or_404(before) if before else None
+    limit = max(1, min(request.args.get("limit", 50, type=int), 100))
+    with connect() as conn:
+        me = current_user(conn)
+        chat.membership(conn, group_id, me)
+        rows = chat.messages(conn, group_id, me, after=after, before=before, limit=limit)
+        games = shared_games(conn, rows)
+        return no_store(respond([message_item(m, me, games) for m in rows]))
+
+
+@bp.post("/groups/<group_id>/messages")
+def post_message(group_id):
+    """Send a message; optionally share a game with league and game_id."""
+    group_id = group_id_or_404(group_id)
+    body = request.get_json(silent=True) or {}
+    league = body.get("league") if body.get("league") in site.LEAGUES else None
+    game_id = str(body.get("game_id") or "") or None
+    with connect() as conn, conn.transaction():
+        me = current_user(conn)
+        message = chat.post_message(conn, group_id, me, body.get("body"), league, game_id if league else None)
+        return no_store(respond(message_item(message, me, shared_games(conn, [message]))))
+
+
+@bp.delete("/groups/<group_id>/messages/<message_id>")
+def delete_message(group_id, message_id):
+    group_id, message_id = group_id_or_404(group_id), int_or_404(message_id)
+    with connect() as conn:
+        me = current_user(conn)
+        chat.delete_message(conn, group_id, me, message_id)
+    return no_store(respond({"id": str(message_id), "deleted": True}))
+
+
+@bp.post("/groups/<group_id>/messages/<message_id>/report")
+def report_message(group_id, message_id):
+    group_id, message_id = group_id_or_404(group_id), int_or_404(message_id)
+    reason = (request.get_json(silent=True) or {}).get("reason")
+    with connect() as conn:
+        me = current_user(conn)
+        chat.report_message(conn, group_id, me, message_id, reason)
+    return no_store(respond({"id": str(message_id), "reported": True}))
+
+
+@bp.put("/users/<user_id>/block")
+def block_user(user_id):
+    with connect() as conn:
+        me = current_user(conn)
+        chat.block(conn, me, optional_uuid(user_id) or "", on=True)
+    return no_store(respond({"user_id": user_id, "blocked": True}))
+
+
+@bp.delete("/users/<user_id>/block")
+def unblock_user(user_id):
+    with connect() as conn:
+        me = current_user(conn)
+        chat.block(conn, me, optional_uuid(user_id) or "", on=False)
+    return no_store(respond({"user_id": user_id, "blocked": False}))
 
 
 # --- mock betting ("Beat the Model") --------------------------------------------------------------
