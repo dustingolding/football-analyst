@@ -336,6 +336,9 @@ CREATE TABLE IF NOT EXISTS push_devices (
 );
 
 ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_news BOOLEAN NOT NULL DEFAULT true;
+-- Auto-follow: notify.py starts a Live Activity on the device (push-to-start) when a followed team's game is live.
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS activity_start_token TEXT;
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS auto_activities BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS push_follows (
     install_id  TEXT NOT NULL REFERENCES push_devices (install_id) ON DELETE CASCADE,

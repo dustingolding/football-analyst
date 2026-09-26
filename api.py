@@ -555,6 +555,11 @@ def register_device(install_id):
     if not isinstance(alerts, dict):
         raise ApiError(400, "bad_request", "alerts must be an object of booleans.")
     switches = [alerts.get(name, True) is not False for name in ALERTS]
+    # Auto-follow on the lock screen is opt-in, and needs the app's push-to-start token.
+    auto_activities = alerts.get("live_activity") is True
+    start_token = body.get("activity_start_token")
+    if start_token is not None and not (isinstance(start_token, str) and ACTIVITY_TOKEN.match(start_token)):
+        raise ApiError(400, "bad_request", "activity_start_token must be hex.")
     follows = body.get("follows") or []
     if not isinstance(follows, list) or len(follows) > MAX_FOLLOWS:
         raise ApiError(400, "bad_request", f"follows must be a list of at most {MAX_FOLLOWS} teams.")
@@ -572,17 +577,20 @@ def register_device(install_id):
             conn.execute(
                 """
                 INSERT INTO push_devices (install_id, apns_token, environment, bundle_id, timezone, alert_kickoff,
-                                          alert_scoring, alert_final, alert_news, api_key_prefix)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                          alert_scoring, alert_final, alert_news, api_key_prefix, auto_activities,
+                                          activity_start_token)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (install_id) DO UPDATE SET
                     apns_token = EXCLUDED.apns_token, environment = EXCLUDED.environment,
                     bundle_id = EXCLUDED.bundle_id, timezone = EXCLUDED.timezone,
                     alert_kickoff = EXCLUDED.alert_kickoff, alert_scoring = EXCLUDED.alert_scoring,
                     alert_final = EXCLUDED.alert_final, alert_news = EXCLUDED.alert_news,
-                    api_key_prefix = EXCLUDED.api_key_prefix,
+                    api_key_prefix = EXCLUDED.api_key_prefix, auto_activities = EXCLUDED.auto_activities,
+                    activity_start_token = EXCLUDED.activity_start_token,
                     disabled_at = NULL, last_error = NULL, updated_at = now()
                 """,
-                (install_id, token, environment, bundle_id, timezone_name, *switches, g.get("api_key_prefix")))
+                (install_id, token, environment, bundle_id, timezone_name, *switches, g.get("api_key_prefix"),
+                 auto_activities, start_token.lower() if start_token else None))
             conn.execute("DELETE FROM push_follows WHERE install_id = %s", (install_id,))
             with conn.cursor() as cur:
                 cur.executemany("INSERT INTO push_follows (install_id, league, team_id) VALUES (%s, %s, %s)",
@@ -591,7 +599,7 @@ def register_device(install_id):
         # The tables are created by the pipeline's schema setup; until that has run, say so plainly.
         raise ApiError(503, "unavailable", "Notifications aren't set up on this server yet.")
     return no_store(respond({"install_id": install_id, "follows": len(teams),
-                             "alerts": dict(zip(ALERTS, switches))}))
+                             "alerts": {**dict(zip(ALERTS, switches)), "live_activity": auto_activities}}))
 
 
 @bp.delete("/devices/<install_id>")

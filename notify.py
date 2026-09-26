@@ -6,7 +6,8 @@ last state it saw (push_game_state) and alerts the devices following either team
     score     a score went up (extra points and two-point tries are folded into the next alert)
     final     -> post
     news      a story about a followed team was published (newsroom articles, via article_teams)
-It also keeps registered Live Activities (push_activities) in step with their games' live state.
+It also keeps registered Live Activities (push_activities) in step with their games' live state, and starts
+one (push-to-start) on devices that auto-follow a team whose game is live.
 Each alert is inserted into push_events before it's sent, so a restart or retry never repeats one.
 A game seen for the first time is recorded without alerts, so starting up mid-game or after
 downtime doesn't replay the day, and changes older than STALE are recorded but not sent.
@@ -42,7 +43,8 @@ NEWS_KIND = {"preview": "Preview", "recap": "Recap", "ratings": "Power Ratings",
 
 GAMES = """
     SELECT l.league, l.game_id, l.state, l.detail, l.home_score, l.away_score, l.last_play, l.broadcast,
-           l.updated_at, g.home_team_id, g.away_team_id,
+           l.updated_at, l.possession_team_id, l.down_distance, l.red_zone, l.home_win_prob,
+           g.home_team_id, g.away_team_id,
            s.state AS seen_state, s.home_score AS seen_home, s.away_score AS seen_away
     FROM live_games l
     JOIN games g USING (league, game_id)
@@ -52,9 +54,10 @@ GAMES = """
 
 
 def team_names(conn):
-    rows = conn.execute("SELECT league, team_id, abbreviation, short_name, display_name FROM teams").fetchall()
-    return {(league, team_id): {"abbr": abbr or short or team_id, "short": short or display or abbr or team_id}
-            for league, team_id, abbr, short, display in rows}
+    rows = conn.execute("SELECT league, team_id, abbreviation, short_name, display_name, color FROM teams").fetchall()
+    return {(league, team_id): {"abbr": abbr or short or team_id, "short": short or display or abbr or team_id,
+                                "color": color}
+            for league, team_id, abbr, short, display, color in rows}
 
 
 def scoring_label(points):
@@ -172,8 +175,60 @@ def run_pass(conn, apns, dry_run=False):
             alerts += 1
             print(f"[notify] {kind} {game['league']} {game['game_id']}: {title} -> {sent} sent, {failed} failed",
                   flush=True)
+        if game["state"] == "in" and not stale:
+            start_activities(conn, apns, game, names)
         record_state(conn, game)
     return alerts
+
+
+AUTO_DEVICES = """
+    SELECT DISTINCT d.install_id, d.activity_start_token, d.environment, d.bundle_id
+    FROM push_devices d JOIN push_follows f USING (install_id)
+    WHERE f.league = %s AND f.team_id = ANY(%s) AND d.disabled_at IS NULL AND d.auto_activities
+      AND d.activity_start_token IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM push_activities a WHERE a.install_id = d.install_id AND a.league = f.league
+                      AND a.game_id = %s AND a.ended_at IS NULL)
+"""
+
+
+def start_activities(conn, apns, game, names):
+    """Auto-follow: start a Live Activity (push-to-start) on each opted-in device following either team, once per
+    device and game. The device then registers the activity's update token, and activity_pass takes over."""
+    devices = conn.execute(AUTO_DEVICES, (game["league"], [game["home_team_id"], game["away_team_id"]],
+                                          game["game_id"])).fetchall()
+    if not devices:
+        return
+    league = game["league"]
+
+    def team(team_id):
+        info = names.get((league, team_id), {})
+        return {"id": team_id, "abbreviation": info.get("abbr", team_id), "name": info.get("short", team_id),
+                "colorHex": info.get("color")}
+
+    attributes = {"league": league, "gameId": game["game_id"], "away": team(game["away_team_id"]),
+                  "home": team(game["home_team_id"])}
+    state = activity_state(game)
+    alert = {"title": f"{attributes['away']['name']} at {attributes['home']['name']}",
+             "body": "Live now. Following on your Lock Screen."}
+    for install_id, token, environment, bundle_id in devices:
+        claimed = conn.execute(
+            "INSERT INTO push_events (league, game_id, kind, detail, title, body) VALUES (%s, %s, 'activity_start', "
+            "%s, %s, %s) ON CONFLICT DO NOTHING RETURNING 1",
+            (league, game["game_id"], install_id, alert["title"], alert["body"])).fetchone()
+        if not claimed:
+            continue
+        if apns is None:
+            print(f"[notify] (no APNs key) would start activity {league} {game['game_id']} on {install_id}", flush=True)
+            continue
+        result = apns.send_activity(token, environment, bundle_id, state, event="start",
+                                    attributes_type="GameActivityAttributes", attributes=attributes, alert=alert)
+        conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE league = %s AND game_id = %s "
+                     "AND kind = 'activity_start' AND detail = %s",
+                     (int(result.ok), int(not result.ok), league, game["game_id"], install_id))
+        if not result.ok and result.dead_token:
+            conn.execute("UPDATE push_devices SET activity_start_token = NULL WHERE install_id = %s", (install_id,))
+        print(f"[notify] start activity {league} {game['game_id']} on {install_id}: "
+              f"{'sent' if result.ok else f'failed {result.status} {result.reason}'}", flush=True)
 
 
 NEWS = f"""
