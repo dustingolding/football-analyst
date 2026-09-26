@@ -387,8 +387,21 @@ CREATE TABLE IF NOT EXISTS push_deliveries (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS push_deliveries_device_idx ON push_deliveries (install_id, created_at DESC);
+
+-- Single games followed from the app's + menu, independent of followed teams: alerts for that game and/or a
+-- Live Activity started (push-to-start) when it kicks off.
+CREATE TABLE IF NOT EXISTS push_game_follows (
+    install_id     TEXT    NOT NULL REFERENCES push_devices (install_id) ON DELETE CASCADE,
+    league         TEXT    NOT NULL,
+    game_id        TEXT    NOT NULL,
+    alerts         BOOLEAN NOT NULL DEFAULT false,
+    live_activity  BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (install_id, league, game_id)
+);
+CREATE INDEX IF NOT EXISTS push_game_follows_game_idx ON push_game_follows (league, game_id);
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT, INSERT, DELETE ON push_game_follows TO web_ro;
         GRANT SELECT, INSERT, DELETE ON push_league_alerts TO web_ro;
         GRANT SELECT ON push_deliveries TO web_ro;
     END IF;
