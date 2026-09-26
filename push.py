@@ -63,8 +63,22 @@ class Apns:
                    "apns-expiration": str(int(time.time()) + expires_in)}
         if collapse_id:
             headers["apns-collapse-id"] = collapse_id[:64]
-        url = f"{HOSTS[environment]}/3/device/{device_token}"
-        payload = {"aps": aps, **(data or {})}
+        return self._post(environment, device_token, headers, {"aps": aps, **(data or {})})
+
+    def send_activity(self, activity_token, environment, bundle_id, content_state, event="update", priority=10,
+                      dismissal_date=None, stale_date=None):
+        """Update ("update") or end ("end") a Live Activity. content_state must match the app's ContentState."""
+        aps = {"timestamp": int(time.time()), "event": event, "content-state": content_state}
+        if dismissal_date:
+            aps["dismissal-date"] = int(dismissal_date)
+        if stale_date:
+            aps["stale-date"] = int(stale_date)
+        headers = {"apns-topic": f"{bundle_id}.push-type.liveactivity", "apns-push-type": "liveactivity",
+                   "apns-priority": str(priority)}
+        return self._post(environment, activity_token, headers, {"aps": aps})
+
+    def _post(self, environment, token, headers, payload):
+        url = f"{HOSTS[environment]}/3/device/{token}"
         for attempt in range(2):
             try:
                 response = self._http.post(url, json=payload,
