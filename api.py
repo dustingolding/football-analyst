@@ -4,8 +4,9 @@ Read-only apart from device registration for push notifications (PUT/DELETE /dev
 chat and accounts (Sign in with Apple; signed-in calls add "Authorization: Bearer <session token>"), versioned, and built on the same queries as the website. Conventions:
     - responses are {"data": ..., "meta": {...}}; errors are {"error": {"code": ..., "message": ...}}
     - ids are strings, times are ISO 8601 UTC, keys are snake_case, probabilities are 0-1
-    - requests carry an API key in the X-API-Key header (create one with api_keys.py);
-      each key has a per-minute rate limit
+    - requests carry either an install token in X-Install-Token (apps: POST /installs trades the app's
+      built-in bootstrap key for one) or an API key in X-API-Key (create one with api_keys.py);
+      each token and key has a per-minute rate limit
     - the full schema is at /api/v1/openapi.json (for swift-openapi-generator)
 
 Breaking changes get a new version prefix (/api/v2); fields may be added to v1 at any time.
@@ -14,6 +15,7 @@ Breaking changes get a new version prefix (/api/v2); fields may be added to v1 a
 import hashlib
 import os
 import re
+import secrets
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -33,7 +35,12 @@ bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 SITE_URL = "https://sidelinewire.com" if site.SITE_ENV == "prod" else "https://dev.sidelinewire.com"  # invite links
 REQUIRE_KEY = os.getenv("API_REQUIRE_KEY", "1") != "0"
 _keys_cache = {"at": 0.0, "keys": {}}
-_hits = defaultdict(deque)  # key hash -> request times in the last minute (per worker)
+_hits = defaultdict(deque)  # key or token hash -> request times in the last minute (per worker)
+_tokens_cache = {}          # token hash -> (fetched at, record or None), per worker
+TOKEN_CACHE_SECONDS = 60    # how long a revocation can take to reach a worker
+_mints = defaultdict(deque)  # client address -> install tokens minted in the last hour (per worker)
+MINTS_PER_HOUR = 20
+BOOTSTRAP_ENDPOINTS = {"api_v1.create_install_token"}
 
 
 class ApiError(Exception):
@@ -54,27 +61,90 @@ def api_error(err):
 def active_keys():
     if time.time() - _keys_cache["at"] > 60:
         _keys_cache["keys"] = {r["key_hash"]: r for r in site.query(
-            "SELECT key_hash, prefix, name, rate_per_minute FROM api_keys WHERE active")}
+            "SELECT key_hash, prefix, name, rate_per_minute, scope FROM api_keys WHERE active")}
         _keys_cache["at"] = time.time()
     return _keys_cache["keys"]
+
+
+def install_token(token):
+    """The install token's record, or None if it's unknown or revoked. Cached per worker for a minute, which is
+    also how often a token's last_seen is refreshed."""
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    hit = _tokens_cache.get(token_hash)
+    if hit and time.time() - hit[0] < TOKEN_CACHE_SECONDS:
+        return hit[1]
+    if len(_tokens_cache) > 50_000:
+        _tokens_cache.clear()
+    with connect() as conn:
+        row = conn.execute(
+            "UPDATE install_tokens SET last_seen_at = now() WHERE token_hash = %s AND revoked_at IS NULL "
+            "RETURNING install_id, rate_per_minute", (token_hash,)).fetchone()
+    record = {"key_hash": token_hash, "install_id": row[0], "rate_per_minute": row[1]} if row else None
+    _tokens_cache[token_hash] = (time.time(), record)
+    return record
+
+
+def rate_limit(key_hash, per_minute):
+    window, now = _hits[key_hash], time.time()
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= per_minute:
+        raise ApiError(429, "rate_limited", f"Limit is {per_minute} requests per minute.")
+    window.append(now)
 
 
 @bp.before_request
 def authenticate():
     if request.endpoint == "api_v1.openapi" or not REQUIRE_KEY:
         return
+    token = request.headers.get("X-Install-Token") or ""
+    if token:
+        record = install_token(token)
+        if record is None:
+            raise ApiError(401, "invalid_token", "This install's token is invalid or revoked; get a new one from "
+                                                 "POST /installs.")
+        rate_limit(record["key_hash"], record["rate_per_minute"])
+        g.api_key_prefix, g.api_key_name, g.install_id = "install", "install token", record["install_id"]
+        return
     key = request.headers.get("X-API-Key") or ""
     record = active_keys().get(hashlib.sha256(key.encode()).hexdigest()) if key else None
     if record is None:
         raise ApiError(401, "unauthorized", "Missing or invalid X-API-Key header.")
-    window, now = _hits[record["key_hash"]], time.time()
-    while window and now - window[0] > 60:
-        window.popleft()
-    if len(window) >= record["rate_per_minute"]:
-        raise ApiError(429, "rate_limited", f"Limit is {record['rate_per_minute']} requests per minute.")
-    window.append(now)
+    if record["scope"] == "bootstrap" and request.endpoint not in BOOTSTRAP_ENDPOINTS:
+        raise ApiError(403, "bootstrap_only", "This key can only create install tokens (POST /installs).")
+    rate_limit(record["key_hash"], record["rate_per_minute"])
     g.api_key_prefix = record["prefix"]
     g.api_key_name = record["name"]
+
+
+def client_address():
+    return (request.headers.get("CF-Connecting-IP") or (request.headers.get("X-Forwarded-For") or "").split(",")[0]
+            or request.remote_addr or "?").strip()
+
+
+@bp.post("/installs")
+def create_install_token():
+    """Trade an API key (the app's built-in bootstrap key) for this install's own token, sent from then on as
+    X-Install-Token. An install keeps its five newest tokens (the app and its widgets can each ask)."""
+    body = request.get_json(silent=True) or {}
+    install_id = install_id_or_error(str(body.get("install_id") or ""))
+    window, now = _mints[client_address()], time.time()
+    while window and now - window[0] > 3600:
+        window.popleft()
+    if len(window) >= MINTS_PER_HOUR:
+        raise ApiError(429, "rate_limited", "Too many new installs from this network; try again later.")
+    window.append(now)
+    token = "sli_" + secrets.token_urlsafe(32)
+    version = str(body.get("app_version") or "")[:32] or None
+    with connect() as conn, conn.transaction():
+        conn.execute("INSERT INTO install_tokens (token_hash, install_id, api_key_prefix, app_version) "
+                     "VALUES (%s, %s, %s, %s)",
+                     (hashlib.sha256(token.encode()).hexdigest(), install_id, g.get("api_key_prefix"), version))
+        conn.execute(
+            "UPDATE install_tokens SET revoked_at = now() WHERE install_id = %(i)s AND revoked_at IS NULL "
+            "AND token_hash NOT IN (SELECT token_hash FROM install_tokens WHERE install_id = %(i)s "
+            "AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 5)", {"i": install_id})
+    return no_store(respond({"token": token, "install_id": install_id}))
 
 
 def respond(data, max_age=300, **meta):
