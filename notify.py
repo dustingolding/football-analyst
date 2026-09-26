@@ -5,6 +5,8 @@ last state it saw (push_game_state) and alerts the devices following either team
     kickoff   pre -> in
     score     a score went up (extra points and two-point tries are folded into the next alert)
     final     -> post
+    upset     a pregame favorite (60%+) down to 35% or less from the second half on
+    close     one-score game with two minutes or less in the 4th, or overtime
     news      a story about a followed team was published (newsroom articles, via article_teams)
 It also keeps registered Live Activities (push_activities) in step with their games' live state, and starts
 one (push-to-start) on devices that auto-follow a team whose game is live.
@@ -34,8 +36,14 @@ from push import Apns
 
 EVERY = 20
 STALE = timedelta(minutes=15)
-PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final", "news": "alert_news"}
-EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "news": 12 * 3600, "test": 3600}
+PREFERENCE = {"kickoff": "alert_kickoff", "score": "alert_scoring", "final": "alert_final", "news": "alert_news",
+              "upset": "alert_upset", "close": "alert_close"}
+EXPIRES = {"kickoff": 30 * 60, "score": 30 * 60, "final": 6 * 3600, "news": 12 * 3600, "upset": 20 * 60,
+           "close": 10 * 60, "test": 3600}
+UPSET_FAVORITE = 0.60    # pregame win probability that makes a team the favorite for upset alerts
+UPSET_TROUBLE = 0.35     # the favorite's live win probability, from the second half on, that triggers it
+CLOSE_MARGIN = 8         # one score
+CLOSE_SECONDS = 120
 NEWS_WINDOW = timedelta(hours=2)  # only stories published this recently alert (no backlog blast on first run)
 SITE = {"prod": "https://sidelinewire.com", "dev": "https://dev.sidelinewire.com"}.get(os.getenv("SITE_ENV", "prod"),
                                                                                       "https://sidelinewire.com")
@@ -43,8 +51,11 @@ NEWS_KIND = {"preview": "Preview", "recap": "Recap", "ratings": "Power Ratings",
 
 GAMES = """
     SELECT l.league, l.game_id, l.state, l.detail, l.home_score, l.away_score, l.last_play, l.broadcast,
-           l.updated_at, l.possession_team_id, l.down_distance, l.red_zone, l.home_win_prob,
+           l.updated_at, l.possession_team_id, l.down_distance, l.red_zone, l.home_win_prob, l.period, l.clock,
            g.home_team_id, g.away_team_id,
+           (SELECT p.home_win_prob FROM predictions p WHERE p.league = l.league AND p.game_id = l.game_id
+              AND p.home_win_prob IS NOT NULL
+            ORDER BY CASE p.model WHEN 'xgb_market' THEN 0 WHEN 'elo' THEN 2 ELSE 1 END LIMIT 1) AS pregame_prob,
            s.state AS seen_state, s.home_score AS seen_home, s.away_score AS seen_away
     FROM live_games l
     JOIN games g USING (league, game_id)
@@ -99,6 +110,50 @@ def detect(game, names):
             if (label == "touchdown" and "touchdown" in play.lower()) or (label == "field goal" and "field goal" in play.lower()):
                 body += f"\n{play}"
             events.append(("score", f"{a}-{h}", f"{scorer['short']} {label}", body))
+    if game["state"] == "in" and None not in (h, a):
+        events += model_alerts(game, home, away)
+    return events
+
+
+def ordinal_period(period):
+    return {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}.get(period, "overtime")
+
+
+def clock_seconds(clock):
+    try:
+        minutes, seconds = (clock or "").split(":")
+        return int(minutes) * 60 + int(float(seconds))
+    except ValueError:
+        return None
+
+
+def model_alerts(game, home, away):
+    """Upset brewing and close-game alerts, each at most once per game (their push_events detail is fixed)."""
+    events = []
+    h, a, period = game["home_score"], game["away_score"], game["period"] or 0
+    live, pre = game["home_win_prob"], game["pregame_prob"]
+    live = None if live is None else (live / 100 if live > 1 else live)
+    pre = None if pre is None else (pre / 100 if pre > 1 else pre)
+    left = clock_seconds(game["clock"])
+    where = f"in {ordinal_period(period)}" if period > 4 else f"in the {ordinal_period(period)}"
+
+    # Upset brewing: a clear pregame favorite whose live chance has sunk, from the second half on.
+    if pre is not None and live is not None and period >= 3:
+        fav_home = pre >= 0.5
+        fav, dog = (home, away) if fav_home else (away, home)
+        fav_live = live if fav_home else 1 - live
+        if max(pre, 1 - pre) >= UPSET_FAVORITE and 0.02 < fav_live <= UPSET_TROUBLE:
+            margin = (h - a) if fav_home else (a - h)
+            state = f"down {-margin}" if margin < 0 else "tied" if margin == 0 else f"up {margin}"
+            timing = f"with {game['clock']} left {where}" if left else where
+            events.append(("upset", "upset", f"Upset brewing: {dog['short']} vs. {fav['short']}",
+                           f"{fav['short']} has a {round(fav_live * 100)}% chance, {state} {timing}."))
+
+    # Close game: one score with two minutes or less in the 4th, or any overtime.
+    if abs(h - a) <= CLOSE_MARGIN and (period > 4 or (period == 4 and left is not None and 0 < left <= CLOSE_SECONDS)):
+        line = f"{away['abbr']} {a} – {home['abbr']} {h}"
+        body = "Overtime." if period > 4 else ("Tied" if h == a else "One-score game") + f" with {game['clock']} left."
+        events.append(("close", "close", f"Close game: {line}", body))
     return events
 
 
@@ -116,7 +171,8 @@ def recipients(conn, league, team_ids, kind):
         f"""
         SELECT DISTINCT d.install_id, d.apns_token, d.environment, d.bundle_id
         FROM push_devices d JOIN push_follows f USING (install_id)
-        WHERE f.league = %s AND f.team_id = ANY(%s) AND d.disabled_at IS NULL AND d.{column}
+        WHERE f.league = %s AND f.team_id = ANY(%s) AND d.disabled_at IS NULL
+          AND COALESCE(f.{column}, d.{column})  -- a per-team setting beats the device's
         """,
         (league, list(team_ids))).fetchall()
 
