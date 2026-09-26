@@ -28,6 +28,13 @@ spec:
               value: ${SITE_ENV}
             - name: SUPPORT_EMAIL
               value: "${SUPPORT_EMAIL}"
+            # Ads and Pro (GET /api/v1/config; see monetization.py).
+            - {name: ADS_ENABLED, value: "${ADS_ENABLED}"}
+            - {name: ADS_TRUST_CLIENT_REWARDS, value: "${ADS_TRUST_CLIENT_REWARDS}"}
+            - {name: PRO_ENABLED, value: "${PRO_ENABLED}"}
+            - {name: ADMOB_BANNER_UNIT, value: "${ADMOB_BANNER_UNIT}"}
+            - {name: ADMOB_NATIVE_UNIT, value: "${ADMOB_NATIVE_UNIT}"}
+            - {name: ADMOB_REWARDED_UNIT, value: "${ADMOB_REWARDED_UNIT}"}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

@@ -27,6 +27,7 @@ import accounts
 import app as site
 import betting
 import chat
+import monetization
 import web_data
 from database import connect
 from openapi import SPEC
@@ -41,6 +42,7 @@ TOKEN_CACHE_SECONDS = 60    # how long a revocation can take to reach a worker
 _mints = defaultdict(deque)  # client address -> install tokens minted in the last hour (per worker)
 MINTS_PER_HOUR = 20
 BOOTSTRAP_ENDPOINTS = {"api_v1.create_install_token"}
+PUBLIC_ENDPOINTS = {"api_v1.openapi", "api_v1.admob_ssv"}   # no key: the spec, and Google's reward callbacks
 
 
 class ApiError(Exception):
@@ -95,7 +97,7 @@ def rate_limit(key_hash, per_minute):
 
 @bp.before_request
 def authenticate():
-    if request.endpoint == "api_v1.openapi" or not REQUIRE_KEY:
+    if request.endpoint in PUBLIC_ENDPOINTS or not REQUIRE_KEY:
         return
     token = request.headers.get("X-Install-Token") or ""
     if token:
@@ -1182,7 +1184,9 @@ def player_summary(conn, player):
     return {"player_id": player["player_id"], "nickname": player["nickname"], "bankroll": betting.BANKROLL,
             "balance": balance, "available": available, "resets": player["resets"],
             "can_reset": available < betting.RESET_BELOW and balance == available,
-            "season": betting.summarize(rows(None)), "week": betting.summarize(rows(betting.week_start()))}
+            "season": betting.summarize(rows(None)), "week": betting.summarize(rows(betting.week_start())),
+            "bonus": {"claims_today": monetization.claims_today(conn, player["player_id"]),
+                      "daily_limit": monetization.REWARD_DAILY, "units_per_ad": monetization.REWARD_UNITS}}
 
 
 @bp.put("/players/<player_id>")
@@ -1471,6 +1475,53 @@ def cancel_parlay(player_id, parlay_id):
             raise ApiError(409, "locked", "Parlays can't be cancelled once one of their games has kicked off.")
         conn.execute("DELETE FROM parlays WHERE id = %s AND status = 'open'", (int(parlay_id),))
     return no_store(respond({"id": parlay_id, "cancelled": True}))
+
+
+# --- ads and Pro -----------------------------------------------------------------------------------
+
+@bp.get("/config")
+def app_config():
+    """Remote switches for the app: ads (on/off, AdMob ad units, feed spacing, rewarded-ad bonus) and Pro."""
+    return respond(monetization.config(), max_age=300)
+
+
+@bp.get("/admob/ssv")
+def admob_ssv():
+    """AdMob's server-side verification callback for rewarded ads (no API key: Google calls it). Credits the
+    player named in user_id once per transaction; answers 200 whenever the request itself was genuine, so
+    Google doesn't retry a duplicate or an over-the-limit reward."""
+    try:
+        params = monetization.verify_ssv(request.query_string.decode())
+    except monetization.SsvError as err:
+        raise ApiError(400, "bad_request", f"Couldn't verify the callback ({err}).") from None
+    except OSError:
+        raise ApiError(503, "unavailable", "Couldn't fetch Google's verification keys.") from None
+    player_id, transaction_id = optional_uuid(params.get("user_id")), params.get("transaction_id")
+    if not player_id or not transaction_id:
+        # Google's own test call from the AdMob console has neither; accept it so the URL verifies.
+        return no_store(respond({"verified": True, "credited": False}))
+    with connect() as conn, conn.transaction():
+        result = monetization.credit_reward(conn, player_id, transaction_id)
+    return no_store(respond({"verified": True, "credited": result == "credited", "result": result}))
+
+
+@bp.post("/players/<player_id>/bonus")
+def claim_bonus(player_id):
+    """The app's own claim for a watched rewarded ad; only where ADS_TRUST_CLIENT_REWARDS is on (dev, before
+    AdMob's callback is set up). Production credits rewards from /admob/ssv alone."""
+    player_id = install_id_or_error(player_id)
+    if not monetization.flag("ADS_TRUST_CLIENT_REWARDS"):
+        raise ApiError(403, "ssv_only", "Rewards are credited when Google confirms the ad.")
+    transaction_id = str((request.get_json(silent=True) or {}).get("transaction_id") or "")[:100]
+    if not transaction_id:
+        raise ApiError(400, "bad_request", "transaction_id is required.")
+    with connect() as conn, conn.transaction():
+        result = monetization.credit_reward(conn, player_id, "client:" + transaction_id)
+        if result == "unknown_player":
+            raise ApiError(404, "not_found", "No such player.")
+        if result == "limit":
+            raise ApiError(409, "limit", f"That's today's {monetization.REWARD_DAILY} bonus ads.")
+        return no_store(respond(player_summary(conn, player_or_error(conn, player_id))))
 
 
 @bp.get("/<league>/games/<game_id>/props")
