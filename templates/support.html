@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Support{% endblock %}
+{% block content %}
+<article class="explainer">
+  <header class="explainer-head">
+    <p class="kicker">Help</p>
+    <h1>SidelineWire support</h1>
+    <p class="dek">Help with the SidelineWire website and iPhone app.</p>
+  </header>
+
+  <section>
+    <h2>Contact us</h2>
+    {% if support_email %}
+      <p>Email <a href="mailto:{{ support_email }}">{{ support_email }}</a>. Include your iPhone model, iOS version and what you were doing when the problem happened, and we'll get back to you.</p>
+    {% else %}
+      <p>Our support email is being set up. Please check back shortly.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Common questions</h2>
+    <h3>How do I follow a team?</h3>
+    <p>Tap the star on any team page, use <strong>+</strong> in the Alerts tab, or pick teams when you first open the app. Your teams' games move to the front of Home and Scores.</p>
+
+    <h3>I'm not getting alerts</h3>
+    <p>Check that notifications are on for SidelineWire in iOS <strong>Settings → Notifications</strong>, then check the switches in the app's <strong>Alerts</strong> tab. Each team can have its own settings under <strong>Per-Team Settings</strong>. Alerts are sent for games with live data, so there's nothing to send between games.</p>
+
+    <h3>How do the lock-screen scores work?</h3>
+    <p>On a live game's page, tap <strong>Follow on Lock Screen</strong>. With <strong>Auto-follow on Lock Screen</strong> turned on in Alerts, your teams' games appear there automatically when they kick off. Live Activities must be allowed for SidelineWire in iOS Settings.</p>
+
+    <h3>Where do the predictions come from?</h3>
+    <p>Our own models, built from box scores and play-by-play and tested on seasons they never saw. <a href="{{ url_for('how_it_works') }}">How our models work</a> explains them.</p>
+
+    <h3>Can I bet in the app?</h3>
+    <p>No. SidelineWire shows predictions and betting lines for information and entertainment. It doesn't take wagers or link to sportsbooks.</p>
+
+    <h3>How do I delete my data?</h3>
+    <p>SidelineWire has no accounts. Turning off notifications or deleting the app stops alerts, and the server forgets devices it can no longer reach. To have your data removed right away, contact us. See our <a href="{{ url_for('privacy') }}">privacy policy</a> for details.</p>
+  </section>
+</article>
+{% endblock %}
