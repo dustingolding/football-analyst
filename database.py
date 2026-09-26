@@ -316,6 +316,27 @@ CREATE TABLE IF NOT EXISTS api_keys (
     active          BOOLEAN     NOT NULL DEFAULT true,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- full: the whole API. bootstrap: only POST /installs (the key built into the app, to get an install token).
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'full';
+
+-- Per-install API tokens (X-Install-Token): each app install trades the built-in bootstrap key for its own
+-- token, which can be rate-limited and revoked on its own. Only the SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS install_tokens (
+    token_hash       TEXT        PRIMARY KEY,
+    install_id       TEXT        NOT NULL,
+    api_key_prefix   TEXT,                          -- the key that minted it
+    rate_per_minute  INTEGER     NOT NULL DEFAULT 240,
+    app_version      TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS install_tokens_install_idx ON install_tokens (install_id) WHERE revoked_at IS NULL;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
+        GRANT SELECT, INSERT, UPDATE ON install_tokens TO web_ro;
+    END IF;
+END $$;
 
 -- Push notifications (notify.py). The app registers each install with PUT /api/v1/devices/<id>,
 -- sending its APNs token, alert preferences and followed teams in one request.
