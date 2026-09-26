@@ -16,7 +16,7 @@ import os
 import re
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 from flask import Blueprint, abort, g, jsonify, request
@@ -175,6 +175,15 @@ def scoreboard():
     return respond(blocks, max_age=15)
 
 
+def live_max_age(games):
+    """How long clients may cache a list of games: briefly while one is live or about to kick off, so clocks and
+    scores keep up (the scoreboard's 15 s), otherwise five minutes."""
+    soon = datetime.now(timezone.utc) + timedelta(minutes=10)
+    busy = any(g["state"] == "in" or (g["state"] == "pre" and g.get("start_time") and g["start_time"] <= soon)
+               for g in games)
+    return 15 if busy else 300
+
+
 @bp.get("/<league>/games")
 def games(league):
     league_or_error(league)
@@ -183,8 +192,7 @@ def games(league):
     season_type = request.args.get("season_type", season_type, type=int)
     week = request.args.get("week", week, type=int)
     rows = games_by(league, "g.season = %s AND g.season_type = %s AND g.week = %s", (season, season_type, week))
-    live = any(g["state"] == "in" for g in rows)
-    return respond([game_summary(league, g) for g in rows], max_age=30 if live else 300,
+    return respond([game_summary(league, g) for g in rows], max_age=live_max_age(rows),
                    season=season, season_type=season_type, week=week)
 
 
@@ -318,12 +326,12 @@ def team_schedule(league, team_id):
     league_or_error(league)
     team_or_error(league, team_id)
     season = season_arg(league)
-    out = []
-    for g in site.team_schedule(league, season, team_id):
+    out, rows = [], site.team_schedule(league, season, team_id)
+    for g in rows:
         out.append({**game_summary(league, g), "is_home": g["is_home"], "opponent_id": g["opp"]["id"],
                     "result": g.get("result"), "team_spread": num(g.get("team_spread"), 1),
                     "team_win_prob": num(g.get("team_win_prob")), "covered": g.get("covered")})
-    return respond(out, season=season)
+    return respond(out, max_age=live_max_age(rows), season=season)
 
 
 @bp.get("/<league>/teams/<team_id>/roster")
