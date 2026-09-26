@@ -174,12 +174,19 @@ def record_state(conn, game):
         (game["league"], game["game_id"], game["state"], game["home_score"], game["away_score"]))
 
 
-def recipients(conn, league, team_ids, kind, league_wide=False):
+GAME_FOLLOW_KINDS = {"soon", "kickoff", "score", "close", "upset", "final"}   # what a followed game alerts about
+
+
+def recipients(conn, league, team_ids, kind, league_wide=False, game_id=None):
     """Devices to alert: followers of any of team_ids with the alert on (a per-team setting beats the device's),
-    plus, when league_wide, devices subscribed to this kind for the whole league. Each device once."""
+    plus, when league_wide, devices subscribed to this kind for the whole league, plus devices following this one
+    game (game_id) from the app's + menu, which get every game alert. Each device once."""
     column = PREFERENCE[kind]  # fixed names, never user input
     league_clause = (f"OR EXISTS (SELECT 1 FROM push_league_alerts la WHERE la.install_id = d.install_id "
                      f"AND la.league = %(league)s AND la.{column})") if league_wide and kind in LEAGUE_WIDE else ""
+    if game_id and kind in GAME_FOLLOW_KINDS:
+        league_clause += (" OR EXISTS (SELECT 1 FROM push_game_follows gf WHERE gf.install_id = d.install_id "
+                          "AND gf.league = %(league)s AND gf.game_id = %(game)s AND gf.alerts)")
     return conn.execute(
         f"""
         SELECT d.install_id, d.apns_token, d.environment, d.bundle_id
@@ -189,7 +196,7 @@ def recipients(conn, league, team_ids, kind, league_wide=False):
                     AND f.team_id = ANY(%(teams)s) AND COALESCE(f.{column}, d.{column}))
             {league_clause})
         """,
-        {"league": league, "teams": list(team_ids)}).fetchall()
+        {"league": league, "teams": list(team_ids), "game": game_id}).fetchall()
 
 
 def ranked(rank):
@@ -251,7 +258,7 @@ def run_pass(conn, apns, dry_run=False):
         if dry_run:
             for kind, detail, title, body in events:
                 devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind,
-                                     league_wide=league_wide_game(game, kind))
+                                     league_wide=league_wide_game(game, kind), game_id=game["game_id"])
                 print(f"[notify] dry run: {kind} {game['league']} {game['game_id']} -> {len(devices)} device(s): "
                       f"{title} | {body}{' (stale, not sent)' if stale else ''}", flush=True)
             continue
@@ -264,7 +271,7 @@ def run_pass(conn, apns, dry_run=False):
             if not claimed or stale:
                 continue
             devices = recipients(conn, game["league"], (game["home_team_id"], game["away_team_id"]), kind,
-                                 league_wide=league_wide_game(game, kind))
+                                 league_wide=league_wide_game(game, kind), game_id=game["game_id"])
             sent, failed = deliver(conn, apns, devices, game["league"], game["game_id"], kind, title, body)
             conn.execute("UPDATE push_events SET sent = %s, failed = %s WHERE league = %s AND game_id = %s "
                          "AND kind = %s AND detail = %s", (sent, failed, game["league"], game["game_id"], kind, detail))
@@ -279,19 +286,22 @@ def run_pass(conn, apns, dry_run=False):
 
 AUTO_DEVICES = """
     SELECT DISTINCT d.install_id, d.activity_start_token, d.environment, d.bundle_id
-    FROM push_devices d JOIN push_follows f USING (install_id)
-    WHERE f.league = %s AND f.team_id = ANY(%s) AND d.disabled_at IS NULL AND d.auto_activities
-      AND d.activity_start_token IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM push_activities a WHERE a.install_id = d.install_id AND a.league = f.league
-                      AND a.game_id = %s AND a.ended_at IS NULL)
+    FROM push_devices d
+    WHERE d.disabled_at IS NULL AND d.activity_start_token IS NOT NULL
+      AND ((d.auto_activities AND EXISTS (SELECT 1 FROM push_follows f WHERE f.install_id = d.install_id
+                                          AND f.league = %(league)s AND f.team_id = ANY(%(teams)s)))
+           OR EXISTS (SELECT 1 FROM push_game_follows gf WHERE gf.install_id = d.install_id
+                      AND gf.league = %(league)s AND gf.game_id = %(game)s AND gf.live_activity))
+      AND NOT EXISTS (SELECT 1 FROM push_activities a WHERE a.install_id = d.install_id AND a.league = %(league)s
+                      AND a.game_id = %(game)s AND a.ended_at IS NULL)
 """
 
 
 def start_activities(conn, apns, game, names):
-    """Auto-follow: start a Live Activity (push-to-start) on each opted-in device following either team, once per
-    device and game. The device then registers the activity's update token, and activity_pass takes over."""
-    devices = conn.execute(AUTO_DEVICES, (game["league"], [game["home_team_id"], game["away_team_id"]],
-                                          game["game_id"])).fetchall()
+    """Auto-follow: start a Live Activity (push-to-start) on each opted-in device following either team, and on
+    devices that asked for this game on the Lock Screen from the + menu, once per device and game. The device then registers the activity's update token, and activity_pass takes over."""
+    devices = conn.execute(AUTO_DEVICES, {"league": game["league"], "game": game["game_id"],
+                                          "teams": [game["home_team_id"], game["away_team_id"]]}).fetchall()
     if not devices:
         return
     league = game["league"]
@@ -568,7 +578,7 @@ def soon_pass(conn, apns, dry_run=False):
             pick = home if pre >= 0.5 else away
             parts.append(f"Model: {pick['short']} {round(max(pre, 1 - pre) * 100)}%")
         title, body = f"Starting soon: {away['short']} at {home['short']}", " · ".join(parts)
-        devices = recipients(conn, league, (g["home_team_id"], g["away_team_id"]), "soon")
+        devices = recipients(conn, league, (g["home_team_id"], g["away_team_id"]), "soon", game_id=g["game_id"])
         if dry_run:
             print(f"[notify] dry run: soon {league} {g['game_id']} -> {len(devices)} device(s): {title} | {body}", flush=True)
             continue

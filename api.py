@@ -530,6 +530,7 @@ ACTIVITY_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,512}$")  # Live Activity push toke
 BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
 TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_FOLLOWS = 200
+MAX_GAME_FOLLOWS = 50
 ALERTS = ("kickoff", "scoring", "final", "news", "upset", "close", "soon")
 LEAGUE_ALERTS = ("upset", "close", "news")  # push_league_alerts.alert_<name>; missing = off  # push_devices.alert_<name>; missing = on
 
@@ -590,6 +591,19 @@ def register_device(install_id):
                                                    for k, v in league_alerts.items()):
         raise ApiError(400, "bad_request", "leagues must map nfl/cfb to an object of booleans.")
     league_rows = {lg: tuple(v.get(n) is True for n in LEAGUE_ALERTS) for lg, v in league_alerts.items()}
+    # Single games from the + menu: alerts for the game and/or a Live Activity when it kicks off.
+    game_follows = body.get("games") or []
+    if not isinstance(game_follows, list) or len(game_follows) > MAX_GAME_FOLLOWS:
+        raise ApiError(400, "bad_request", f"games must be a list of at most {MAX_GAME_FOLLOWS} games.")
+    games = {}
+    for item in game_follows:
+        item = item if isinstance(item, dict) else {}
+        league, game_id = item.get("league"), str(item.get("game_id") or "")
+        if league not in site.LEAGUES or not game_id.isdigit():
+            raise ApiError(400, "bad_request", "Each followed game needs a league (nfl or cfb) and a game_id.")
+        wants = (item.get("alerts") is True, item.get("live_activity") is True)
+        if any(wants):
+            games[(league, game_id)] = wants
     # Mock betting: this install's player (for result alerts) and whether it wants them (default on).
     bet_player_id = optional_uuid(body.get("bet_player_id"))
     bet_alerts = alerts.get("bets") is not False
@@ -625,6 +639,12 @@ def register_device(install_id):
                     "INSERT INTO push_follows (install_id, league, team_id, alert_kickoff, alert_scoring, alert_final, "
                     "alert_news, alert_upset, alert_close, alert_soon) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     [(install_id, league, team_id, *overrides) for (league, team_id), overrides in sorted(teams.items())])
+            conn.execute("DELETE FROM push_game_follows WHERE install_id = %s", (install_id,))
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO push_game_follows (install_id, league, game_id, alerts, live_activity) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    [(install_id, league, game_id, *wants) for (league, game_id), wants in sorted(games.items())])
             conn.execute("DELETE FROM push_league_alerts WHERE install_id = %s", (install_id,))
             with conn.cursor() as cur:
                 cur.executemany(
@@ -634,7 +654,7 @@ def register_device(install_id):
     except psycopg.errors.UndefinedTable:
         # The tables are created by the pipeline's schema setup; until that has run, say so plainly.
         raise ApiError(503, "unavailable", "Notifications aren't set up on this server yet.")
-    return no_store(respond({"install_id": install_id, "follows": len(teams),
+    return no_store(respond({"install_id": install_id, "follows": len(teams), "games": len(games),
                              "alerts": {**dict(zip(ALERTS, switches)), "live_activity": auto_activities,
                                         "bets": bet_alerts},
                              "leagues": {lg: dict(zip(LEAGUE_ALERTS, row)) for lg, row in league_rows.items()}}))

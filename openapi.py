@@ -163,6 +163,12 @@ SCHEMAS = {
                        "bets": {**B, "description": "Beat the Model results when this install's bets are graded"}},
                       []),
         "bet_player_id": {**NS, "description": "This install's mock-betting player (for result alerts)"},
+        "games": {**arr(obj({"league": {"type": "string", "enum": ["nfl", "cfb"]}, "game_id": S,
+                             "alerts": {**B, "description": "Every alert for this game (soon, kickoff, scores, close, "
+                                                             "upset, final)"},
+                             "live_activity": {**B, "description": "Start a Live Activity when it kicks off"}},
+                            ["league", "game_id"])),
+                  "description": "Single games followed from the + menu (at most 50)"},
         "leagues": {"type": "object", "description": "League-wide alerts by league (nfl, cfb), independent of follows",
                     "additionalProperties": obj({"upset": B, "close": B, "news": B}, [])},
         "activity_start_token": {**NS, "description": "ActivityKit push-to-start token, hex (needed for live_activity)"},
