@@ -1118,28 +1118,54 @@ def player_or_error(conn, player_id):
 
 
 def bet_game(league, game):
-    """The matchup a bet is on, so a bet list needs no per-game requests."""
-    return {"start_time": iso(game["start_time"]), "completed": bool(game["completed"]),
-            "home": {**team_ref(league, game["home_team_id"]), "score": game["home_score"]},
-            "away": {**team_ref(league, game["away_team_id"]), "score": game["away_score"]}}
+    """The matchup a bet is on, with its live state and score while it's under way, so a bet list needs no
+    per-game requests."""
+    live_state = game.get("live_state")
+    state = "final" if game["completed"] or live_state == "post" else "in" if live_state == "in" else "pre"
+    live = state == "in" and game.get("live_home") is not None
+    return {"start_time": iso(game["start_time"]), "completed": bool(game["completed"]), "state": state,
+            "detail": game.get("live_detail") if state == "in" else None,
+            "home": {**team_ref(league, game["home_team_id"]),
+                     "score": game["live_home"] if live else game["home_score"]},
+            "away": {**team_ref(league, game["away_team_id"]),
+                     "score": game["live_away"] if live else game["away_score"]}}
 
 
-def bet_item(row, game):
-    b = dict(zip(("id", "league", "game_id", "market", "selection", "line", "price", "stake", "model_selection",
-                  "status", "profit", "placed_at", "settled_at"), row))
+BET_KEYS = ("id", "league", "game_id", "market", "selection", "line", "price", "stake", "model_selection", "status",
+            "profit", "placed_at", "settled_at", "live", "pending_until", "prop", "prop_name", "placed_detail")
+BET_COLUMNS = ", ".join(BET_KEYS)
+BET_GAME_KEYS = ("start_time", "completed", "home_team_id", "away_team_id", "home_score", "away_score",
+                 "live_state", "live_detail", "live_home", "live_away")
+BET_GAME_SQL = ("g.start_time, g.completed, g.home_team_id, g.away_team_id, g.home_score, g.away_score, "
+                "l.state, l.detail, l.home_score, l.away_score")
+
+
+def bet_item(row, game, current=None):
+    b = dict(zip(BET_KEYS, row))
+    settled = b["status"] not in ("open", "void")
     return {"id": str(b["id"]), "league": b["league"], "game_id": b["game_id"], "game": bet_game(b["league"], game),
-            "market": b["market"],
+            "market": b["market"], "prop": b["prop"], "prop_name": b["prop_name"],
             "selection": b["selection"], "line": num(b["line"], 1), "price": b["price"], "stake": num(b["stake"], 2),
             "model_selection": b["model_selection"], "status": b["status"], "profit": num(b["profit"], 2),
-            "model_result": betting.model_result(b["status"], b["selection"], b["model_selection"])
-            if b["status"] != "open" else None,
+            "model_result": betting.model_result(b["status"], b["selection"], b["model_selection"]) if settled else None,
             "to_win": num(betting.win_amount(b["stake"], b["price"]), 2),
+            "live": bool(b["live"]), "pending": b["status"] == "open" and b["pending_until"] is not None,
+            "placed_detail": b["placed_detail"], "current": current,
             "placed_at": iso(b["placed_at"]), "settled_at": iso(b["settled_at"])}
 
 
-BET_COLUMNS = ("id, league, game_id, market, selection, line, price, stake, model_selection, status, profit, "
-               "placed_at, settled_at")
-BET_GAME_KEYS = ("start_time", "completed", "home_team_id", "away_team_id", "home_score", "away_score")
+def live_prop_values(conn, items):
+    """Current stat for each open prop in items [(league, game_id, prop)] from the latest box scores."""
+    boxes, out = {}, {}
+    for league, game_id, prop in items:
+        if (league, game_id) not in boxes:
+            row = conn.execute("SELECT data FROM game_boxscores WHERE league = %s AND game_id = %s",
+                               (league, game_id)).fetchone()
+            boxes[(league, game_id)] = row[0] if row else None
+        if boxes[(league, game_id)] is not None:
+            value = betting.prop_value(boxes[(league, game_id)], prop)
+            out[(league, game_id, prop)] = value if value is not None else 0
+    return out
 
 
 def player_summary(conn, player):
@@ -1198,32 +1224,41 @@ def reset_player(player_id):
 
 @bp.get("/players/<player_id>/bets")
 def player_bets(player_id):
+    """A player's bets, newest first, with each game's live state and, for open props, the player's stat so far."""
     player_id = install_id_or_error(player_id)
     status = request.args.get("status")
     if status not in (None, "open", "settled"):
         raise ApiError(400, "bad_request", "status must be open or settled.")
-    where = {"open": "AND status = 'open'", "settled": "AND status <> 'open'", None: ""}[status]
+    where = {"open": "AND b.status = 'open'", "settled": "AND b.status <> 'open'", None: ""}[status]
     with connect() as conn:
         player_or_error(conn, player_id)
-        columns = ", ".join(f"b.{c.strip()}" for c in BET_COLUMNS.split(",")) + ", " + \
-            ", ".join(f"g.{c}" for c in BET_GAME_KEYS)
+        columns = ", ".join(f"b.{c}" for c in BET_KEYS) + ", " + BET_GAME_SQL
         rows = conn.execute(f"SELECT {columns} FROM bets b JOIN games g USING (league, game_id) "
-                            f"WHERE b.player_id = %s {where.replace('status', 'b.status')} "
-                            "ORDER BY b.placed_at DESC LIMIT 200", (player_id,)).fetchall()
-    width = len(BET_COLUMNS.split(","))
-    return no_store(respond([bet_item(r[:width], dict(zip(BET_GAME_KEYS, r[width:]))) for r in rows]))
+                            f"LEFT JOIN live_games l USING (league, game_id) "
+                            f"WHERE b.player_id = %s {where} ORDER BY b.placed_at DESC LIMIT 200", (player_id,)).fetchall()
+        width = len(BET_KEYS)
+        bets = [(r[:width], dict(zip(BET_GAME_KEYS, r[width:]))) for r in rows]
+        props = [(b[1], b[2], b[15]) for b, g in bets if b[3] == "prop" and b[9] == "open"
+                 and (g["live_state"] in ("in", "post") or g["completed"])]
+        current = live_prop_values(conn, props)
+    return no_store(respond([bet_item(b, g, current.get((b[1], b[2], b[15]))) for b, g in bets]))
 
 
 @bp.post("/players/<player_id>/bets")
 def place_bet(player_id):
-    """Place a bet at the current consensus price, which is locked into the bet."""
+    """Place a bet at the current price, which is locked into the bet: the books' consensus before kickoff,
+    SidelineWire's live line once the game is under way (confirmed after a short delay), or a player prop."""
     player_id = install_id_or_error(player_id)
     body = request.get_json(silent=True) or {}
     league, game_id = body.get("league"), str(body.get("game_id") or "")
     market, selection = body.get("market"), body.get("selection")
+    prop = str(body.get("prop") or "") or None
     league_or_error(league)
     if market not in betting.MARKETS or selection not in betting.MARKETS[market]:
-        raise ApiError(400, "bad_request", "market is spread, moneyline or total; selection is home/away or over/under.")
+        raise ApiError(400, "bad_request", "market is spread, moneyline, total or prop; selection is home/away or "
+                                           "over/under.")
+    if market == "prop" and not prop:
+        raise ApiError(400, "bad_request", "A prop bet needs the prop (from GET /{league}/games/{id}/props).")
     try:
         stake = round(float(body.get("stake")), 2)
     except (TypeError, ValueError):
@@ -1233,14 +1268,34 @@ def place_bet(player_id):
     with connect() as conn, conn.transaction():
         player = player_or_error(conn, player_id)
         conn.execute("SELECT 1 FROM bet_players WHERE player_id = %s FOR UPDATE", (player_id,))  # one bet at a time
-        prices = betting.markets(conn, league, game_id)
-        if prices is None:
-            raise ApiError(404, "not_found", f"No {league} game {game_id}.")
-        if prices["locked"]:
-            raise ApiError(409, "locked", "Betting on this game closed at kickoff.")
-        q = betting.quote(prices, market, selection)
-        if q is None:
-            raise ApiError(409, "unavailable", f"There's no {market} line for this game yet.")
+        live, prop_name, model_side, snapshot = False, None, None, (None, None, None)
+        if market == "prop":
+            offered = betting.props(conn, league, game_id)
+            if offered is None:
+                raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+            if offered["locked"]:
+                raise ApiError(409, "locked", "Player props close at kickoff.")
+            q = betting.prop_quote(offered["props"], prop, selection)
+            if q is None:
+                raise ApiError(409, "unavailable", "That prop isn't offered for this game.")
+            line, price, prop_name = q
+        else:
+            prices = betting.markets(conn, league, game_id)
+            if prices is None:
+                raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+            if prices["locked"]:
+                raise ApiError(409, "locked", prices.get("reason") or "Betting on this game is closed.")
+            q = betting.quote(prices, market, selection)
+            if q is None:
+                raise ApiError(409, "unavailable", f"There's no {market} line for this game right now.")
+            line, price = q
+            live, model_side = bool(prices.get("live")), prices["model"][market]
+            if live:
+                snapshot = (prices["home_score"], prices["away_score"], prices["detail"])
+                count = conn.execute("SELECT count(*) FROM bets WHERE player_id = %s AND league = %s AND game_id = %s "
+                                     "AND live", (player_id, league, game_id)).fetchone()[0]
+                if count >= 10:
+                    raise ApiError(409, "limit", "That's the most in-game bets on one game (10).")
         _, available = betting.bankroll(conn, player_id, player["reset_at"])
         if stake > available:
             raise ApiError(409, "insufficient", f"You have {available:g} units available.")
@@ -1248,11 +1303,14 @@ def place_bet(player_id):
         try:
             row = conn.execute(
                 f"INSERT INTO bets (player_id, league, game_id, season, market, selection, line, price, stake, "
-                f"model_selection) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {BET_COLUMNS}",
-                (player_id, league, game_id, game["season"], market, selection, q[0], q[1], stake,
-                 prices["model"][market])).fetchone()
+                f"model_selection, live, pending_until, placed_home, placed_away, placed_detail, prop, prop_name) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                f"CASE WHEN %s THEN now() + %s::interval END, %s, %s, %s, %s, %s) RETURNING {BET_COLUMNS}",
+                (player_id, league, game_id, game["season"], market, selection, line, price, stake, model_side, live,
+                 live, f"{betting.LIVE_DELAY} seconds", *snapshot, prop, prop_name)).fetchone()
         except psycopg.errors.UniqueViolation:
-            raise ApiError(409, "conflict", f"You already have a {market} bet on this game.") from None
+            what = "bet on that prop" if market == "prop" else f"pregame {market} bet on this game"
+            raise ApiError(409, "conflict", f"You already have a {what}.") from None
     return no_store(respond(bet_item(row, game)))
 
 
@@ -1274,24 +1332,31 @@ def cancel_bet(player_id, bet_id):
 
 
 PARLAY_COLUMNS = "id, stake, odds, status, profit, placed_at, settled_at"
-LEG_COLUMNS = ("l.parlay_id, l.league, l.game_id, l.market, l.selection, l.line, l.price, l.model_selection, l.status, "
-               "g.start_time, g.completed, g.home_team_id, g.away_team_id, g.home_score, g.away_score")
+LEG_KEYS = ("parlay_id", "league", "game_id", "market", "selection", "line", "price", "model_selection", "status",
+            "prop", "prop_name")
+LEG_COLUMNS = ", ".join(f"pl.{k}" for k in LEG_KEYS) + ", " + BET_GAME_SQL   # pl: the leg, l: live_games
 
 
 def parlay_items(conn, rows):
-    """Parlays with their legs (and each leg's matchup), in the order given."""
+    """Parlays with their legs (each leg's matchup and live state; open props' stat so far), in the order given."""
     parlays = [dict(zip(("id", "stake", "odds", "status", "profit", "placed_at", "settled_at"), r)) for r in rows]
     legs = {}
     if parlays:
-        for r in conn.execute(f"SELECT {LEG_COLUMNS} FROM parlay_legs l JOIN games g USING (league, game_id) "
-                              "WHERE l.parlay_id = ANY(%s) ORDER BY g.start_time, l.id", ([p["id"] for p in parlays],)):
-            leg = dict(zip(("parlay_id", "league", "game_id", "market", "selection", "line", "price", "model_selection",
-                            "status", *BET_GAME_KEYS), r))
+        found = []
+        for r in conn.execute(f"SELECT {LEG_COLUMNS} FROM parlay_legs pl JOIN games g USING (league, game_id) "
+                              "LEFT JOIN live_games l USING (league, game_id) "
+                              "WHERE pl.parlay_id = ANY(%s) ORDER BY g.start_time, pl.id", ([p["id"] for p in parlays],)):
+            found.append((dict(zip(LEG_KEYS, r[:len(LEG_KEYS)])), dict(zip(BET_GAME_KEYS, r[len(LEG_KEYS):]))))
+        props = [(leg["league"], leg["game_id"], leg["prop"]) for leg, g in found if leg["market"] == "prop"
+                 and leg["status"] == "open" and (g["live_state"] in ("in", "post") or g["completed"])]
+        current = live_prop_values(conn, props)
+        for leg, g in found:
             legs.setdefault(leg["parlay_id"], []).append({
-                "league": leg["league"], "game_id": leg["game_id"],
-                "game": bet_game(leg["league"], {k: leg[k] for k in BET_GAME_KEYS}),
-                "market": leg["market"], "selection": leg["selection"], "line": num(leg["line"], 1),
-                "price": leg["price"], "model_selection": leg["model_selection"], "status": leg["status"]})
+                "league": leg["league"], "game_id": leg["game_id"], "game": bet_game(leg["league"], g),
+                "market": leg["market"], "prop": leg["prop"], "prop_name": leg["prop_name"],
+                "selection": leg["selection"], "line": num(leg["line"], 1), "price": leg["price"],
+                "model_selection": leg["model_selection"], "status": leg["status"],
+                "current": current.get((leg["league"], leg["game_id"], leg["prop"]))})
     out = []
     for p in parlays:
         odds = float(p["odds"])
@@ -1318,7 +1383,8 @@ def player_parlays(player_id):
 
 @bp.post("/players/<player_id>/parlays")
 def place_parlay(player_id):
-    """One stake on 2-6 legs from different games, each at its current consensus price (locked in)."""
+    """One stake on 2-6 pregame legs, each at its current price (locked in). Legs can share a game (player props,
+    a side and a total) but not repeat a market or pair a game's spread with its moneyline."""
     player_id = install_id_or_error(player_id)
     body = request.get_json(silent=True) or {}
     legs = body.get("legs")
@@ -1330,33 +1396,49 @@ def place_parlay(player_id):
         raise ApiError(400, "bad_request", "stake must be a number of units.") from None
     if not betting.MIN_STAKE <= stake <= betting.MAX_STAKE:
         raise ApiError(400, "bad_request", f"Stakes are {betting.MIN_STAKE}-{betting.MAX_STAKE} units.")
-    games = set()
+    keys, sides = set(), {}
     for leg in legs:
-        leg = leg if isinstance(leg, dict) else {}
+        if not isinstance(leg, dict):
+            raise ApiError(400, "bad_request", "Each leg is an object.")
         league_or_error(leg.get("league"))
-        if leg.get("market") not in betting.MARKETS or leg.get("selection") not in betting.MARKETS[leg["market"]]:
-            raise ApiError(400, "bad_request", "Each leg needs a market (spread, moneyline, total) and a selection.")
-        key = (leg["league"], str(leg.get("game_id") or ""))
-        if key in games:
-            raise ApiError(400, "bad_request", "A parlay can have only one leg per game.")
-        games.add(key)
+        market = leg.get("market")
+        if market not in betting.MARKETS or leg.get("selection") not in betting.MARKETS[market]:
+            raise ApiError(400, "bad_request", "Each leg needs a market (spread, moneyline, total, prop) and a selection.")
+        if market == "prop" and not leg.get("prop"):
+            raise ApiError(400, "bad_request", "A prop leg needs its prop.")
+        game = (leg["league"], str(leg.get("game_id") or ""))
+        key = (*game, market, str(leg.get("prop") or ""))
+        if key in keys:
+            raise ApiError(400, "bad_request", "A parlay can't repeat a market or prop.")
+        keys.add(key)
+        sides.setdefault(game, set()).add(market)
+        if {"spread", "moneyline"} <= sides[game]:
+            raise ApiError(400, "bad_request", "A parlay can't have both the spread and the moneyline of one game.")
     with connect() as conn, conn.transaction():
         player = player_or_error(conn, player_id)
         conn.execute("SELECT 1 FROM bet_players WHERE player_id = %s FOR UPDATE", (player_id,))
-        placed, season = [], None
+        placed, season, offered = [], None, {}
         for leg in legs:
-            league, game_id = leg["league"], str(leg["game_id"])
-            prices = betting.markets(conn, league, game_id)
-            if prices is None:
-                raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+            league, game_id, market = leg["league"], str(leg["game_id"]), leg["market"]
             game, locked = betting.game_state(conn, league, game_id)
+            if game is None:
+                raise ApiError(404, "not_found", f"No {league} game {game_id}.")
             matchup = f"{team_ref(league, game['away_team_id'])['abbreviation']} @ {team_ref(league, game['home_team_id'])['abbreviation']}"
             if locked:
-                raise ApiError(409, "locked", f"Betting on {matchup} closed at kickoff. Remove that leg.")
-            q = betting.quote(prices, leg["market"], leg["selection"])
-            if q is None:
-                raise ApiError(409, "unavailable", f"There's no {leg['market']} line for {matchup} right now.")
-            placed.append((league, game_id, leg["market"], leg["selection"], q[0], q[1], prices["model"][leg["market"]]))
+                raise ApiError(409, "locked", f"{matchup} has kicked off; parlays are pregame only. Remove that leg.")
+            if market == "prop":
+                if (league, game_id) not in offered:
+                    offered[(league, game_id)] = betting.props(conn, league, game_id)["props"]
+                q = betting.prop_quote(offered[(league, game_id)], leg["prop"], leg["selection"])
+                if q is None:
+                    raise ApiError(409, "unavailable", f"A {matchup} prop in this parlay isn't offered anymore.")
+                placed.append((league, game_id, market, leg["selection"], q[0], q[1], None, leg["prop"], q[2]))
+            else:
+                prices = betting.markets(conn, league, game_id)
+                q = betting.quote(prices, market, leg["selection"])
+                if q is None:
+                    raise ApiError(409, "unavailable", f"There's no {market} line for {matchup} right now.")
+                placed.append((league, game_id, market, leg["selection"], q[0], q[1], prices["model"][market], None, None))
             season = max(season or 0, game["season"])
         odds = betting.parlay_odds([p[5] for p in placed])
         if odds > betting.MAX_PARLAY_ODDS:
@@ -1368,7 +1450,7 @@ def place_parlay(player_id):
                            f"RETURNING {PARLAY_COLUMNS}", (player_id, season, stake, odds)).fetchone()
         with conn.cursor() as cur:
             cur.executemany("INSERT INTO parlay_legs (parlay_id, league, game_id, market, selection, line, price, "
-                            "model_selection) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                            "model_selection, prop, prop_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                             [(row[0], *p) for p in placed])
         return no_store(respond(parlay_items(conn, [row])[0]))
 
@@ -1389,6 +1471,20 @@ def cancel_parlay(player_id, parlay_id):
             raise ApiError(409, "locked", "Parlays can't be cancelled once one of their games has kicked off.")
         conn.execute("DELETE FROM parlays WHERE id = %s AND status = 'open'", (int(parlay_id),))
     return no_store(respond({"id": parlay_id, "cancelled": True}))
+
+
+@bp.get("/<league>/games/<game_id>/props")
+def game_props(league, game_id):
+    """Player props for a game (over/under on each team's main passer, rushers and receivers), pregame only."""
+    league_or_error(league)
+    with connect() as conn:
+        offered = betting.props(conn, league, game_id)
+    if offered is None:
+        raise ApiError(404, "not_found", f"No {league} game {game_id}.")
+    teams = {}
+    for item in offered["props"]:
+        teams.setdefault(item["team_id"], team_ref(league, item["team_id"]))
+    return no_store(respond({**offered, "props": [{**item, "team": teams[item["team_id"]]} for item in offered["props"]]}))
 
 
 @bp.get("/<league>/games/<game_id>/markets")

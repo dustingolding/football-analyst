@@ -359,6 +359,9 @@ SPEC = {
         },
         "/players/{player_id}/parlays/{parlay_id}": write("delete", "Cancel an open parlay before any leg kicks off",
                                                           {"type": "object"}, [PLAYER_ID, param("parlay_id", "path")]),
+        "/{league}/games/{game_id}/props": get(
+            "Player props for a game (passing, rushing, receiving yards over/under), pregame only",
+            {"type": "object"}, [LEAGUE, GAME_ID]),
         "/{league}/games/{game_id}/markets": get("Prices a bet would lock in now, and the model's side of each market",
                                                  {"type": "object"}, [LEAGUE, GAME_ID]),
         "/leaderboard": get("Mock-betting standings by profit, with the model's own record", {"type": "object"},
