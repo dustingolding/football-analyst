@@ -22,7 +22,8 @@ import web_data
 from database import closing_lines, connect
 
 app = Flask(__name__)
-SITE_ENV = os.getenv("SITE_ENV", "dev")  # "prod" on sidelinewire.com; anything else is a dev/test site
+SITE_ENV = os.getenv("SITE_ENV", "dev")
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "")  # shown on /support and /privacy (deploy/<env>.env)  # "prod" on sidelinewire.com; anything else is a dev/test site
 
 
 @app.after_request
@@ -786,6 +787,18 @@ def compute_metrics():
 def models():
     return render_template("models.html", metrics=compute_metrics(), leagues=LEAGUES,
                            first_season=TEST_FIRST_SEASON)
+
+
+@app.route("/support")
+def support():
+    """Help and contact for the website and the iOS app (the App Store listing's Support URL)."""
+    return render_template("support.html", support_email=SUPPORT_EMAIL)
+
+
+@app.route("/privacy")
+def privacy():
+    """Privacy policy for the website and the iOS app (the App Store listing's Privacy Policy URL)."""
+    return render_template("privacy.html", support_email=SUPPORT_EMAIL)
 
 
 @app.route("/how-it-works")
