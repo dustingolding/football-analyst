@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS bets (
 );
 CREATE INDEX IF NOT EXISTS bets_open_idx ON bets (league, game_id) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS bets_player_idx ON bets (player_id, placed_at DESC);
+-- False from grading until notify.py has sent the result alert (bets graded before this column: never).
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT true;
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'web_ro') THEN
         GRANT SELECT, INSERT, UPDATE ON bet_players TO web_ro;
@@ -198,8 +200,8 @@ def settle(conn):
     for bet_id, market, selection, line, price, stake, home, away in rows:
         status = outcome(market, selection, line, home, away)
         profit = win_amount(stake, price) if status == "won" else -float(stake) if status == "lost" else 0
-        conn.execute("UPDATE bets SET status = %s, profit = %s, settled_at = now() WHERE id = %s AND status = 'open'",
-                     (status, profit, bet_id))
+        conn.execute("UPDATE bets SET status = %s, profit = %s, settled_at = now(), notified = false "
+                     "WHERE id = %s AND status = 'open'", (status, profit, bet_id))
     return len(rows)
 
 
