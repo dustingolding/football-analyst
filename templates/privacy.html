@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Privacy policy{% endblock %}
+{% block content %}
+<article class="explainer">
+  <header class="explainer-head">
+    <p class="kicker">Legal</p>
+    <h1>Privacy policy</h1>
+    <p class="dek">Effective September 26, 2026. This policy covers the SidelineWire website (sidelinewire.com) and the SidelineWire iPhone app.</p>
+  </header>
+
+  <section>
+    <h2>The short version</h2>
+    <ul class="facts">
+      <li>There are no accounts. We don't ask for your name, email address, location or contacts.</li>
+      <li>We keep only what alerts and lock-screen scores need to work, tied to your device, not to you.</li>
+      <li>We don't sell your data, show ads, or track you across other apps and websites.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>What the app sends us</h2>
+    <p>When you allow notifications, the app registers your device with our server so we can send the alerts you choose. That registration contains:</p>
+    <ul class="facts">
+      <li><strong>A push notification token</strong> issued by Apple, and a random ID the app creates when it's installed.</li>
+      <li><strong>The teams you follow</strong> and your alert settings, including any per-team and league-wide choices.</li>
+      <li><strong>Your time zone</strong>, the app's bundle ID and whether it's a test or App Store build.</li>
+      <li><strong>Live Activity tokens</strong>, if you follow a game on your Lock Screen, so we can update the score.</li>
+    </ul>
+    <p>We also keep a list of the alerts we've sent to your device so the app can show your recent alerts.</p>
+  </section>
+
+  <section>
+    <h2>What stays on your device</h2>
+    <p>Your followed teams and settings are saved on your iPhone. The followed-teams list also syncs to your other devices through Apple's iCloud, under your Apple account; we never see your iCloud data. The app's widgets read the same list on your device.</p>
+  </section>
+
+  <section>
+    <h2>Server logs and the website</h2>
+    <p>Like most websites, our servers log requests (IP address, time, page requested and browser or app version) to keep the service running and secure. The website doesn't use advertising or analytics cookies.</p>
+  </section>
+
+  <section>
+    <h2>How we use it</h2>
+    <p>Only to run SidelineWire: to decide which alerts to send, update lock-screen scores, show your alert history, and fix problems. We don't use it for advertising or profiling.</p>
+  </section>
+
+  <section>
+    <h2>Who else is involved</h2>
+    <ul class="facts">
+      <li><strong>Apple</strong> delivers notifications and Live Activities, and syncs your followed teams through iCloud.</li>
+      <li><strong>Team logos</strong> are loaded from ESPN's image servers, which receive your IP address like any website you load an image from.</li>
+    </ul>
+    <p>We don't sell or share your data with anyone else. We run our own servers.</p>
+  </section>
+
+  <section>
+    <h2>How long we keep it</h2>
+    <p>Device registrations are kept while the app keeps using them. When Apple reports that a device can no longer receive notifications (for example, the app was deleted), we stop sending and mark it inactive. Alert history and server logs are kept only as long as needed to run the service.</p>
+  </section>
+
+  <section>
+    <h2>Your choices</h2>
+    <p>You can turn any alert off in the app, turn off notifications in iOS Settings, or delete the app. To have your device's data deleted from our server, {% if support_email %}email <a href="mailto:{{ support_email }}">{{ support_email }}</a>{% else %}contact us through our <a href="{{ url_for('support') }}">support page</a>{% endif %}. Deleting the app and turning off notifications also stops all alerts, and we then mark the device inactive.</p>
+  </section>
+
+  <section>
+    <h2>Children</h2>
+    <p>SidelineWire isn't directed to children under 13, and we don't knowingly collect data from them.</p>
+  </section>
+
+  <section>
+    <h2>Changes and contact</h2>
+    <p>If this policy changes, we'll update this page and its effective date. Questions? {% if support_email %}Email <a href="mailto:{{ support_email }}">{{ support_email }}</a>.{% else %}See our <a href="{{ url_for('support') }}">support page</a>.{% endif %}</p>
+  </section>
+</article>
+{% endblock %}

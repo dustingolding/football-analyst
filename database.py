@@ -584,6 +584,8 @@ def connect():
 
 def init_db(conn):
     conn.execute(SCHEMA)
+    import betting  # noqa: PLC0415  (mock betting tables live with their logic)
+    conn.execute(betting.SCHEMA)
 
 
 def normalize_params(params):

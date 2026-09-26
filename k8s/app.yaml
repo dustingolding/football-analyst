@@ -26,6 +26,8 @@ spec:
           env:
             - name: SITE_ENV
               value: ${SITE_ENV}
+            - name: SUPPORT_EMAIL
+              value: "${SUPPORT_EMAIL}"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
