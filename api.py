@@ -514,6 +514,7 @@ def article(league, slug):
 
 INSTALL_ID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 APNS_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,200}$")
+ACTIVITY_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,512}$")  # Live Activity push tokens are longer (128 bytes today)
 BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
 TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_FOLLOWS = 200
@@ -610,7 +611,7 @@ def delete_device(install_id):
 @bp.put("/live-activities/<token>")
 def register_activity(token):
     """Register a Live Activity's push token for one game; notify.py keeps it updated until the final."""
-    if not APNS_TOKEN.match(token):
+    if not ACTIVITY_TOKEN.match(token):
         raise ApiError(400, "bad_request", "The activity token must be hex.")
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
@@ -646,7 +647,7 @@ def register_activity(token):
 @bp.delete("/live-activities/<token>")
 def delete_activity(token):
     """The user ended the activity; stop pushing to it."""
-    if not APNS_TOKEN.match(token):
+    if not ACTIVITY_TOKEN.match(token):
         raise ApiError(400, "bad_request", "The activity token must be hex.")
     try:
         with connect() as conn:
