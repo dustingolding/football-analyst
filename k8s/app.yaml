@@ -39,6 +39,12 @@ spec:
                   name: newsroom
                   key: password
                   optional: true
+          envFrom:
+            # Sign in with Apple key (APPLE_SIWA_KEY_P8, APPLE_SIWA_KEY_ID, APPLE_TEAM_ID) for revoking on account
+            # deletion; optional, sign-in works without it.
+            - secretRef:
+                name: siwa
+                optional: true
           lifecycle:
             preStop:
               # Keep serving while Traefik drops this pod from rotation, so deploys don't 502.

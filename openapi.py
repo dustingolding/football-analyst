@@ -273,6 +273,16 @@ SPEC = {
             **write("delete", "Stop updating a Live Activity", obj({"token": S, "deleted": B}),
                     [param("token", "path", description="The activity's APNs push token, hex")]),
         },
+        "/auth/apple": write("post", "Sign in with Apple: exchange an identity token for a session token",
+                             obj({"token": S, "user": {"type": "object"}, "player_id": NS}), [],
+                             obj({"identity_token": S, "authorization_code": NS, "full_name": NS,
+                                  "install_id": NS, "player_id": NS})),
+        "/auth/signout": write("post", "End this session (Authorization: Bearer)", {"type": "object"}, []),
+        "/me": {
+            **get("The signed-in user (Authorization: Bearer)", {"type": "object"}, []),
+            **write("put", "Change the display name", {"type": "object"}, [], obj({"display_name": S})),
+            **write("delete", "Delete the account and everything tied to it", {"type": "object"}, []),
+        },
         "/players/{player_id}": {
             **get("A mock-betting player: bankroll, week and season record, tail/fade split", {"type": "object"},
                   [PLAYER_ID]),
