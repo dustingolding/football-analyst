@@ -347,6 +347,16 @@ CREATE TABLE IF NOT EXISTS push_follows (
     PRIMARY KEY (install_id, league, team_id)
 );
 CREATE INDEX IF NOT EXISTS push_follows_team_idx ON push_follows (league, team_id);
+-- Model alerts (notify.py): an upset brewing, and a close finish.
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_upset BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_close BOOLEAN NOT NULL DEFAULT true;
+-- Per-team overrides of the device's alert switches; NULL means use the device's setting.
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_kickoff BOOLEAN;
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_scoring BOOLEAN;
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_final BOOLEAN;
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_news BOOLEAN;
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_upset BOOLEAN;
+ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_close BOOLEAN;
 -- Live Activities (the iOS lock-screen scoreboard): the app registers each activity's push token with
 -- PUT /api/v1/live-activities/<token>; notify.py pushes the game's live state to it and ends it at the final.
 CREATE TABLE IF NOT EXISTS push_activities (

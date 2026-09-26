@@ -518,7 +518,7 @@ ACTIVITY_TOKEN = re.compile(r"^[0-9A-Fa-f]{64,512}$")  # Live Activity push toke
 BUNDLE_ID = re.compile(r"^[A-Za-z0-9.-]{3,155}$")
 TEAM_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MAX_FOLLOWS = 200
-ALERTS = ("kickoff", "scoring", "final", "news")  # push_devices.alert_<name>; missing = on
+ALERTS = ("kickoff", "scoring", "final", "news", "upset", "close")  # push_devices.alert_<name>; missing = on
 
 
 def install_id_or_error(install_id):
@@ -563,12 +563,15 @@ def register_device(install_id):
     follows = body.get("follows") or []
     if not isinstance(follows, list) or len(follows) > MAX_FOLLOWS:
         raise ApiError(400, "bad_request", f"follows must be a list of at most {MAX_FOLLOWS} teams.")
-    teams = set()
+    teams = {}  # (league, team_id) -> per-team overrides, None where the device setting applies
     for item in follows:
         league, team_id = (item or {}).get("league"), str((item or {}).get("team_id") or "")
         if league not in site.LEAGUES or not TEAM_ID.match(team_id):
             raise ApiError(400, "bad_request", "Each follow needs a league (nfl or cfb) and a team_id.")
-        teams.add((league, team_id))
+        overrides = (item or {}).get("alerts") or {}
+        if not isinstance(overrides, dict):
+            raise ApiError(400, "bad_request", "A follow's alerts must be an object of booleans.")
+        teams[(league, team_id)] = tuple(overrides[n] if isinstance(overrides.get(n), bool) else None for n in ALERTS)
 
     try:
         with connect() as conn, conn.transaction():
@@ -577,14 +580,15 @@ def register_device(install_id):
             conn.execute(
                 """
                 INSERT INTO push_devices (install_id, apns_token, environment, bundle_id, timezone, alert_kickoff,
-                                          alert_scoring, alert_final, alert_news, api_key_prefix, auto_activities,
-                                          activity_start_token)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                          alert_scoring, alert_final, alert_news, alert_upset, alert_close,
+                                          api_key_prefix, auto_activities, activity_start_token)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (install_id) DO UPDATE SET
                     apns_token = EXCLUDED.apns_token, environment = EXCLUDED.environment,
                     bundle_id = EXCLUDED.bundle_id, timezone = EXCLUDED.timezone,
                     alert_kickoff = EXCLUDED.alert_kickoff, alert_scoring = EXCLUDED.alert_scoring,
                     alert_final = EXCLUDED.alert_final, alert_news = EXCLUDED.alert_news,
+                    alert_upset = EXCLUDED.alert_upset, alert_close = EXCLUDED.alert_close,
                     api_key_prefix = EXCLUDED.api_key_prefix, auto_activities = EXCLUDED.auto_activities,
                     activity_start_token = EXCLUDED.activity_start_token,
                     disabled_at = NULL, last_error = NULL, updated_at = now()
@@ -593,8 +597,10 @@ def register_device(install_id):
                  auto_activities, start_token.lower() if start_token else None))
             conn.execute("DELETE FROM push_follows WHERE install_id = %s", (install_id,))
             with conn.cursor() as cur:
-                cur.executemany("INSERT INTO push_follows (install_id, league, team_id) VALUES (%s, %s, %s)",
-                                [(install_id, league, team_id) for league, team_id in sorted(teams)])
+                cur.executemany(
+                    "INSERT INTO push_follows (install_id, league, team_id, alert_kickoff, alert_scoring, alert_final, "
+                    "alert_news, alert_upset, alert_close) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [(install_id, league, team_id, *overrides) for (league, team_id), overrides in sorted(teams.items())])
     except psycopg.errors.UndefinedTable:
         # The tables are created by the pipeline's schema setup; until that has run, say so plainly.
         raise ApiError(503, "unavailable", "Notifications aren't set up on this server yet.")
