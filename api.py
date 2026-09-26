@@ -715,10 +715,18 @@ def player_or_error(conn, player_id):
     return dict(zip(("player_id", "nickname", "reset_at", "resets"), row))
 
 
-def bet_item(row):
+def bet_game(league, game):
+    """The matchup a bet is on, so a bet list needs no per-game requests."""
+    return {"start_time": iso(game["start_time"]), "completed": bool(game["completed"]),
+            "home": {**team_ref(league, game["home_team_id"]), "score": game["home_score"]},
+            "away": {**team_ref(league, game["away_team_id"]), "score": game["away_score"]}}
+
+
+def bet_item(row, game):
     b = dict(zip(("id", "league", "game_id", "market", "selection", "line", "price", "stake", "model_selection",
                   "status", "profit", "placed_at", "settled_at"), row))
-    return {"id": str(b["id"]), "league": b["league"], "game_id": b["game_id"], "market": b["market"],
+    return {"id": str(b["id"]), "league": b["league"], "game_id": b["game_id"], "game": bet_game(b["league"], game),
+            "market": b["market"],
             "selection": b["selection"], "line": num(b["line"], 1), "price": b["price"], "stake": num(b["stake"], 2),
             "model_selection": b["model_selection"], "status": b["status"], "profit": num(b["profit"], 2),
             "model_result": betting.model_result(b["status"], b["selection"], b["model_selection"])
@@ -729,6 +737,7 @@ def bet_item(row):
 
 BET_COLUMNS = ("id, league, game_id, market, selection, line, price, stake, model_selection, status, profit, "
                "placed_at, settled_at")
+BET_GAME_KEYS = ("start_time", "completed", "home_team_id", "away_team_id", "home_score", "away_score")
 
 
 def player_summary(conn, player):
@@ -790,9 +799,13 @@ def player_bets(player_id):
     where = {"open": "AND status = 'open'", "settled": "AND status <> 'open'", None: ""}[status]
     with connect() as conn:
         player_or_error(conn, player_id)
-        rows = conn.execute(f"SELECT {BET_COLUMNS} FROM bets WHERE player_id = %s {where} "
-                            "ORDER BY placed_at DESC LIMIT 200", (player_id,)).fetchall()
-    return no_store(respond([bet_item(r) for r in rows]))
+        columns = ", ".join(f"b.{c.strip()}" for c in BET_COLUMNS.split(",")) + ", " + \
+            ", ".join(f"g.{c}" for c in BET_GAME_KEYS)
+        rows = conn.execute(f"SELECT {columns} FROM bets b JOIN games g USING (league, game_id) "
+                            f"WHERE b.player_id = %s {where.replace('status', 'b.status')} "
+                            "ORDER BY b.placed_at DESC LIMIT 200", (player_id,)).fetchall()
+    width = len(BET_COLUMNS.split(","))
+    return no_store(respond([bet_item(r[:width], dict(zip(BET_GAME_KEYS, r[width:]))) for r in rows]))
 
 
 @bp.post("/players/<player_id>/bets")
@@ -834,7 +847,7 @@ def place_bet(player_id):
                  prices["model"][market])).fetchone()
         except psycopg.errors.UniqueViolation:
             raise ApiError(409, "conflict", f"You already have a {market} bet on this game.") from None
-    return no_store(respond(bet_item(row)))
+    return no_store(respond(bet_item(row, game)))
 
 
 @bp.delete("/players/<player_id>/bets/<bet_id>")
