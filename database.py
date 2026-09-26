@@ -360,6 +360,9 @@ ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_close BOOLEAN;
 -- "Starting soon": 15 minutes before a followed team's kickoff.
 ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_soon BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE push_follows ADD COLUMN IF NOT EXISTS alert_soon BOOLEAN;
+-- Mock-betting results: the install's own betting player, and whether it wants its graded bets.
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS bet_player_id TEXT;
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS alert_bets BOOLEAN NOT NULL DEFAULT true;
 
 -- League-wide alerts, independent of followed teams (college upsets/close games need a ranked team).
 CREATE TABLE IF NOT EXISTS push_league_alerts (

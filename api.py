@@ -590,6 +590,9 @@ def register_device(install_id):
                                                    for k, v in league_alerts.items()):
         raise ApiError(400, "bad_request", "leagues must map nfl/cfb to an object of booleans.")
     league_rows = {lg: tuple(v.get(n) is True for n in LEAGUE_ALERTS) for lg, v in league_alerts.items()}
+    # Mock betting: this install's player (for result alerts) and whether it wants them (default on).
+    bet_player_id = optional_uuid(body.get("bet_player_id"))
+    bet_alerts = alerts.get("bets") is not False
 
     try:
         with connect() as conn, conn.transaction():
@@ -599,8 +602,9 @@ def register_device(install_id):
                 """
                 INSERT INTO push_devices (install_id, apns_token, environment, bundle_id, timezone, alert_kickoff,
                                           alert_scoring, alert_final, alert_news, alert_upset, alert_close, alert_soon,
-                                          api_key_prefix, auto_activities, activity_start_token)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                          api_key_prefix, auto_activities, activity_start_token, bet_player_id,
+                                          alert_bets)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (install_id) DO UPDATE SET
                     apns_token = EXCLUDED.apns_token, environment = EXCLUDED.environment,
                     bundle_id = EXCLUDED.bundle_id, timezone = EXCLUDED.timezone,
@@ -610,10 +614,11 @@ def register_device(install_id):
                     alert_soon = EXCLUDED.alert_soon,
                     api_key_prefix = EXCLUDED.api_key_prefix, auto_activities = EXCLUDED.auto_activities,
                     activity_start_token = EXCLUDED.activity_start_token,
+                    bet_player_id = EXCLUDED.bet_player_id, alert_bets = EXCLUDED.alert_bets,
                     disabled_at = NULL, last_error = NULL, updated_at = now()
                 """,
                 (install_id, token, environment, bundle_id, timezone_name, *switches, g.get("api_key_prefix"),
-                 auto_activities, start_token.lower() if start_token else None))
+                 auto_activities, start_token.lower() if start_token else None, bet_player_id, bet_alerts))
             conn.execute("DELETE FROM push_follows WHERE install_id = %s", (install_id,))
             with conn.cursor() as cur:
                 cur.executemany(
@@ -630,7 +635,8 @@ def register_device(install_id):
         # The tables are created by the pipeline's schema setup; until that has run, say so plainly.
         raise ApiError(503, "unavailable", "Notifications aren't set up on this server yet.")
     return no_store(respond({"install_id": install_id, "follows": len(teams),
-                             "alerts": {**dict(zip(ALERTS, switches)), "live_activity": auto_activities},
+                             "alerts": {**dict(zip(ALERTS, switches)), "live_activity": auto_activities,
+                                        "bets": bet_alerts},
                              "leagues": {lg: dict(zip(LEAGUE_ALERTS, row)) for lg, row in league_rows.items()}}))
 
 
