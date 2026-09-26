@@ -66,9 +66,15 @@ class Apns:
         return self._post(environment, device_token, headers, {"aps": aps, **(data or {})})
 
     def send_activity(self, activity_token, environment, bundle_id, content_state, event="update", priority=10,
-                      dismissal_date=None, stale_date=None):
-        """Update ("update") or end ("end") a Live Activity. content_state must match the app's ContentState."""
+                      dismissal_date=None, stale_date=None, attributes_type=None, attributes=None, alert=None):
+        """Update ("update") or end ("end") a Live Activity, or start one ("start", sent to the app's push-to-start
+        token with attributes_type/attributes). content_state must match the app's ContentState."""
         aps = {"timestamp": int(time.time()), "event": event, "content-state": content_state}
+        if attributes_type:
+            aps["attributes-type"] = attributes_type
+            aps["attributes"] = attributes
+        if alert:
+            aps["alert"] = alert
         if dismissal_date:
             aps["dismissal-date"] = int(dismissal_date)
         if stale_date:
