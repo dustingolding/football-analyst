@@ -586,6 +586,10 @@ def init_db(conn):
     conn.execute(SCHEMA)
     import betting  # noqa: PLC0415  (mock betting tables live with their logic)
     conn.execute(betting.SCHEMA)
+    import accounts  # noqa: PLC0415  (after betting: links bet_players to users)
+    conn.execute(accounts.SCHEMA)
+    import chat  # noqa: PLC0415  (after accounts: groups belong to users)
+    conn.execute(chat.SCHEMA)
 
 
 def normalize_params(params):

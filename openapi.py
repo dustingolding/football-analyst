@@ -273,6 +273,48 @@ SPEC = {
             **write("delete", "Stop updating a Live Activity", obj({"token": S, "deleted": B}),
                     [param("token", "path", description="The activity's APNs push token, hex")]),
         },
+        "/auth/apple": write("post", "Sign in with Apple: exchange an identity token for a session token",
+                             obj({"token": S, "user": {"type": "object"}, "player_id": NS}), [],
+                             obj({"identity_token": S, "authorization_code": NS, "full_name": NS,
+                                  "install_id": NS, "player_id": NS})),
+        "/auth/signout": write("post", "End this session (Authorization: Bearer)", {"type": "object"}, []),
+        "/me": {
+            **get("The signed-in user (Authorization: Bearer)", {"type": "object"}, []),
+            **write("put", "Change the display name", {"type": "object"}, [], obj({"display_name": S})),
+            **write("delete", "Delete the account and everything tied to it", {"type": "object"}, []),
+        },
+        "/groups": {
+            **get("Your chat groups, most recently active first, with unread counts", arr({"type": "object"}), []),
+            **write("post", "Create a group (you become its creator)", {"type": "object"}, [], obj({"name": S})),
+        },
+        "/groups/join": write("post", "Join a group with its invite code", {"type": "object"}, [], obj({"code": S})),
+        "/groups/{group_id}": {
+            **get("A group and its members", {"type": "object"}, [param("group_id", "path")]),
+            **write("put", "Rename (creator), mute, or mark read", {"type": "object"}, [param("group_id", "path")],
+                    obj({"name": S, "muted": B, "last_read_id": S})),
+            **write("delete", "Delete the group (creator)", {"type": "object"}, [param("group_id", "path")]),
+        },
+        "/groups/{group_id}/invite": write("post", "Make a new invite code (creator)", {"type": "object"},
+                                           [param("group_id", "path")]),
+        "/groups/{group_id}/members/{user_id}": write(
+            "delete", "Leave (your id) or remove a member (creator)", {"type": "object"},
+            [param("group_id", "path"), param("user_id", "path")]),
+        "/groups/{group_id}/messages": {
+            **get("Messages oldest first; ?after= for new ones, ?before= for older", arr({"type": "object"}),
+                  [param("group_id", "path"), param("after"), param("before"), param("limit", schema=I)]),
+            **write("post", "Send a message, optionally sharing a game", {"type": "object"}, [param("group_id", "path")],
+                    obj({"body": S, "league": NS, "game_id": NS})),
+        },
+        "/groups/{group_id}/messages/{message_id}": write(
+            "delete", "Delete your message (or any, as creator)", {"type": "object"},
+            [param("group_id", "path"), param("message_id", "path")]),
+        "/groups/{group_id}/messages/{message_id}/report": write(
+            "post", "Report a message", {"type": "object"}, [param("group_id", "path"), param("message_id", "path")],
+            obj({"reason": NS})),
+        "/users/{user_id}/block": {
+            **write("put", "Block a user: hide their messages and alerts", {"type": "object"}, [param("user_id", "path")]),
+            **write("delete", "Unblock a user", {"type": "object"}, [param("user_id", "path")]),
+        },
         "/players/{player_id}": {
             **get("A mock-betting player: bankroll, week and season record, tail/fade split", {"type": "object"},
                   [PLAYER_ID]),

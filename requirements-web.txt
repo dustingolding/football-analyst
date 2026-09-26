@@ -4,3 +4,4 @@ psycopg[binary]
 python-dotenv
 tzdata
 prometheus_client
+PyJWT[crypto]
