@@ -359,6 +359,10 @@ SPEC = {
         },
         "/players/{player_id}/parlays/{parlay_id}": write("delete", "Cancel an open parlay before any leg kicks off",
                                                           {"type": "object"}, [PLAYER_ID, param("parlay_id", "path")]),
+        "/config": get("Remote switches for the app: ads (AdMob ad units, feed spacing, rewarded bonus) and Pro",
+                       {"type": "object"}),
+        "/players/{player_id}/bonus": write("post", "Claim a watched rewarded ad (dev only; production uses AdMob SSV)",
+                                            {"type": "object"}, [PLAYER_ID], obj({"transaction_id": S})),
         "/{league}/games/{game_id}/props": get(
             "Player props for a game (passing, rushing, receiving yards over/under), pregame only",
             {"type": "object"}, [LEAGUE, GAME_ID]),

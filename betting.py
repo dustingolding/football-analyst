@@ -570,10 +570,11 @@ def bankroll(conn, player_id, reset_at):
         "SELECT COALESCE(sum(profit) FILTER (WHERE status <> 'open'), 0), "
         "COALESCE(sum(stake) FILTER (WHERE status = 'open'), 0) FROM ("
         "  SELECT status, stake, profit, placed_at FROM bets WHERE player_id = %(p)s"
-        "  UNION ALL SELECT status, stake, profit, placed_at FROM parlays WHERE player_id = %(p)s) t "
+        "  UNION ALL SELECT status, stake, profit, placed_at FROM parlays WHERE player_id = %(p)s"
+        "  UNION ALL SELECT 'bonus', 0, units, created_at FROM bet_bonuses WHERE player_id = %(p)s) t "
         "WHERE %(r)s::timestamptz IS NULL OR placed_at > %(r)s::timestamptz",
         {"p": player_id, "r": reset_at}).fetchone()
-    balance = round(BANKROLL + float(graded), 2)
+    balance = round(BANKROLL + float(graded), 2)   # graded profit plus bonus units (rewarded ads)
     return balance, round(balance - float(open_stakes), 2)
 
 
